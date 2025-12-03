@@ -364,10 +364,12 @@ function MessageInfoModal({ message, conv, onClose }) {
 }
 
 export default function Chat() {
-  const { token, setToken, user, setUser, conversations, setConversations, activeId, setActiveId, messages, setMessages, pushMessage, updateMessage, replaceTempMessage, logout, profileOpen, setProfileOpen } = useStore()
+  const { token, setToken, user, setUser, conversations, setConversations, activeId, setActiveId, messages, setMessages, pushMessage, updateMessage, replaceTempMessage, removeMessage, logout, profileOpen, setProfileOpen } = useStore()
   const [socket, setSocket] = useState(null)
   const [typingUsers, setTypingUsers] = useState({})
   const [openNew, setOpenNew] = useState(false)
+  const [selectedMessage, setSelectedMessage] = useState(null)
+  const [toast, setToast] = useState(null)
   const nav = useNavigate()
   const [showMembers, setShowMembers] = useState(false)
   const [infoMsg, setInfoMsg] = useState(null)
@@ -530,6 +532,10 @@ export default function Chat() {
         const state = useStore.getState()
         const convId = Object.keys(state.messages).find(cid => (state.messages[cid] || []).some(m => m._id === messageId))
         if (convId) state.updateMessage(convId, messageId, { deliveredTo, seenBy })
+      })
+      s.on('message_deleted', ({ messageId, conversationId }) => {
+        removeMessage(conversationId, messageId)
+        if (selectedMessage?._id === messageId) setSelectedMessage(null)
       })
       s.on('typing', ({ conversationId, userId }) => {
         setTypingUsers(t => ({ ...t, [conversationId]: new Set([...(t[conversationId] || []), userId]) }))
@@ -801,6 +807,15 @@ export default function Chat() {
     return () => socket.emit('leave_conversation', activeId)
   }, [socket, activeId, token])
 
+  useEffect(() => {
+    const unsub = useStore.subscribe((state) => state.notifications, (notifs, prev) => {
+      if (notifs && prev && notifs.length > prev.length) {
+        setToast(notifs[0])
+      }
+    })
+    return () => unsub()
+  }, [])
+
   if (!token) return null
   if (!user) return <div className="h-screen grid place-items-center text-gray-600">Loading...</div>
 
@@ -887,7 +902,10 @@ export default function Chat() {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' }
       ],
       iceCandidatePoolSize: 10
     })
@@ -1422,6 +1440,8 @@ export default function Chat() {
             setInfoMsg={setInfoMsg}
             refreshMessages={refreshMessages}
             onStartCall={startCall}
+            selectedMessage={selectedMessage}
+            setSelectedMessage={setSelectedMessage}
           />
         </div>
         <div className="w-72 flex-none border-l h-full hidden xl:block">
@@ -1440,6 +1460,28 @@ export default function Chat() {
           onReject={rejectIncomingCall}
         />
       )}
+      {toast && <Toast notification={toast} onClose={() => setToast(null)} />}
+    </div>
+  )
+}
+
+function Toast({ notification, onClose }) {
+  useEffect(() => {
+    const t = setTimeout(onClose, 3000)
+    return () => clearTimeout(t)
+  }, [notification])
+
+  if (!notification) return null
+
+  return (
+    <div className="fixed top-4 right-4 z-50 bg-white rounded-xl shadow-xl p-4 border border-gray-100 animate-bounce max-w-sm cursor-pointer flex items-start gap-3" onClick={onClose}>
+      <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 grid place-items-center text-xs font-semibold flex-shrink-0">
+        {(notification.title || 'N').charAt(0).toUpperCase()}
+      </div>
+      <div>
+        <div className="font-semibold text-sm">{notification.title}</div>
+        <div className="text-xs text-gray-500 line-clamp-2">{notification.message}</div>
+      </div>
     </div>
   )
 }
@@ -1532,7 +1574,7 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
   )
 }
 
-function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, refreshMessages, onStartCall }) {
+function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, refreshMessages, onStartCall, selectedMessage, setSelectedMessage }) {
   const { activeId, messages, pushMessage, token, setEncryptionKey, getEncryptionKey } = useStore()
   const [text, setText] = useState('')
   const [showCallMenu, setShowCallMenu] = useState(false)
@@ -1643,71 +1685,115 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-5 py-3 border-b flex items-center justify-between relative">
-        <div>
-          <div className="font-semibold">{conv?.type === 'group' ? (conv?.name || 'Group') : (other?.username || 'Conversation')}</div>
-          {other && (
-            <div className="text-xs flex items-center gap-1">
-              {/* Show online if last seen within 5 minutes */}
-              {dayjs().diff(dayjs(other.lastSeenAt), 'minute') < 5 ? (
-                <>
-                  <span className="w-2 h-2 bg-green-600 rounded-full"></span>
-                  <span className="text-green-600">Online</span>
-                </>
-              ) : (
-                <span className="text-gray-500">Last seen {dayjs(other.lastSeenAt).fromNow?.() || dayjs(other.lastSeenAt).format('HH:mm')}</span>
+      <div className="px-5 py-3 border-b flex items-center justify-between relative h-16">
+        {selectedMessage ? (
+          <>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setSelectedMessage(null)} className="p-2 hover:bg-gray-100 rounded-full">✕</button>
+              <div className="font-semibold text-sm">1 selected</div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={() => { setInfoMsg(selectedMessage); setSelectedMessage(null) }} className="p-2 hover:bg-gray-100 rounded-lg" title="Info">ℹ️</button>
+              {String(selectedMessage.sender?._id || selectedMessage.sender) === String(user._id) && (
+                <button
+                  onClick={async () => {
+                    if (!confirm('Delete this message?')) return
+                    try {
+                      await fetch(`${API}/api/messages/${selectedMessage._id}`, {
+                        method: 'DELETE',
+                        headers: { Authorization: `Bearer ${token}` }
+                      })
+                      setSelectedMessage(null)
+                    } catch (e) {
+                      console.error(e)
+                      alert('Failed to delete')
+                    }
+                  }}
+                  className="p-2 hover:bg-red-50 text-red-600 rounded-lg"
+                  title="Delete"
+                >
+                  🗑️
+                </button>
               )}
             </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2 text-gray-400">
-          {conv && (
-            <>
-              <div className="relative">
-                <button
-                  title="Calls"
-                  className="w-9 h-9 rounded-full hover:bg-gray-100 flex items-center justify-center text-base"
-                  onClick={() => setShowCallMenu(v => !v)}
-                >
-                  <span>📞</span>
-                </button>
-                {showCallMenu && (
-                  <div className="absolute right-0 mt-1 w-44 bg-white rounded-xl shadow-lg border text-sm z-10">
+          </>
+        ) : (
+          <>
+            <div>
+              <div className="font-semibold">{conv?.type === 'group' ? (conv?.name || 'Group') : (other?.username || 'Conversation')}</div>
+              {other && (
+                <div className="text-xs flex items-center gap-1">
+                  {/* Show online if last seen within 5 minutes */}
+                  {dayjs().diff(dayjs(other.lastSeenAt), 'minute') < 5 ? (
+                    <>
+                      <span className="w-2 h-2 bg-green-600 rounded-full"></span>
+                      <span className="text-green-600">Online</span>
+                    </>
+                  ) : (
+                    <span className="text-gray-500">Last seen {dayjs(other.lastSeenAt).fromNow?.() || dayjs(other.lastSeenAt).format('HH:mm')}</span>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-gray-400">
+              {conv && (
+                <>
+                  <div className="relative">
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
-                      onClick={() => { setShowCallMenu(false); onStartCall('video') }}
+                      title="Calls"
+                      className="w-9 h-9 rounded-full hover:bg-gray-100 flex items-center justify-center text-base"
+                      onClick={() => setShowCallMenu(v => !v)}
                     >
-                      <span className="text-base">🎥</span>
-                      <span>Video call</span>
+                      <span>📞</span>
                     </button>
-                    <button
-                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
-                      onClick={() => { setShowCallMenu(false); onStartCall('audio') }}
-                    >
-                      <span className="text-base">📞</span>
-                      <span>Audio call</span>
-                    </button>
+                    {showCallMenu && (
+                      <div className="absolute right-0 mt-1 w-44 bg-white rounded-xl shadow-lg border text-sm z-10">
+                        <button
+                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
+                          onClick={() => { setShowCallMenu(false); onStartCall('video') }}
+                        >
+                          <span className="text-base">🎥</span>
+                          <span>Video call</span>
+                        </button>
+                        <button
+                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
+                          onClick={() => { setShowCallMenu(false); onStartCall('audio') }}
+                        >
+                          <span className="text-base">📞</span>
+                          <span>Audio call</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            </>
-          )}
-          <button
-            title="Refresh messages"
-            className="p-2 rounded-lg hover:bg-gray-100"
-            onClick={refreshMessages}
-          >
-            🔄
-          </button>
-          {conv?.type === 'group' && (
-            <button title="Group Info" className="p-2 rounded-lg hover:bg-gray-100" onClick={() => setShowMembers(true)}>ℹ️</button>
-          )}
-        </div>
+                </>
+              )}
+              <button
+                title="Refresh messages"
+                className="p-2 rounded-lg hover:bg-gray-100"
+                onClick={refreshMessages}
+              >
+                🔄
+              </button>
+              {conv?.type === 'group' && (
+                <button title="Group Info" className="p-2 rounded-lg hover:bg-gray-100" onClick={() => setShowMembers(true)}>ℹ️</button>
+              )}
+            </div>
+          </>
+        )}
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto p-6 space-y-3 bg-sky-50/40">
         {convMessages.length === 0 && null}
         {convMessages.map(m => (
-          <MessageBubble key={m._id} me={user._id} m={m} totalMembers={membersCount} conv={conv} onInfo={() => setInfoMsg(m)} />
+          <MessageBubble
+            key={m._id}
+            me={user._id}
+            m={m}
+            totalMembers={membersCount}
+            conv={conv}
+            onInfo={() => setInfoMsg(m)}
+            selected={selectedMessage?._id === m._id}
+            onSelect={() => setSelectedMessage(selectedMessage?._id === m._id ? null : m)}
+          />
         ))}
         {isTyping && <div className="text-xs text-gray-500">Typing...</div>}
       </div>
@@ -1731,12 +1817,15 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
   )
 }
 
-function MessageBubble({ m, me, totalMembers, conv, onInfo }) {
+function MessageBubble({ m, me, totalMembers, conv, onInfo, selected, onSelect }) {
   const mine = String(m.sender?._id || m.sender) === String(me)
   const senderName = m.sender?.username || (conv?.members || []).find(x => String(x._id) === String(m.sender))?.username || (mine ? 'You' : 'User')
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[70%] rounded-2xl px-4 py-3 shadow ${mine ? 'bg-primary text-white rounded-br-sm' : 'bg-white rounded-bl-sm'}`}>
+      <div
+        onClick={onSelect}
+        className={`max-w-[70%] rounded-2xl px-4 py-3 shadow cursor-pointer transition-colors ${selected ? 'ring-2 ring-offset-1 ring-primary' : ''} ${mine ? 'bg-primary text-white rounded-br-sm' : 'bg-white rounded-bl-sm'}`}
+      >
         {conv?.type === 'group' && (
           <div className={`text-[11px] mb-1 ${mine ? 'text-white/90' : 'text-gray-700'}`}>{senderName}</div>
         )}

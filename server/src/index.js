@@ -327,6 +327,27 @@ app.get('/api/messages/:conversationId', auth, async (req, res) => {
   res.json(safe);
 });
 
+app.delete('/api/messages/:id', auth, async (req, res) => {
+  try {
+    const msg = await Message.findById(req.params.id);
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+    // Only sender can delete
+    if (String(msg.sender) !== String(req.user._id)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    await Message.findByIdAndDelete(req.params.id);
+
+    // Notify everyone in the conversation
+    io.to(`conv:${msg.conversation}`).emit('message_deleted', { messageId: req.params.id, conversationId: msg.conversation });
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Socket.IO auth for WebSocket connections
 io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token;

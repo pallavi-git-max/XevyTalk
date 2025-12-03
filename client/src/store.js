@@ -38,6 +38,12 @@ export const useStore = create((set, get) => ({
       [convId]: (s.messages[convId] || []).map(m => (m.tempId && m.tempId === tempId) ? newMsg : m)
     }
   })),
+  removeMessage: (convId, messageId) => set((s) => ({
+    messages: {
+      ...s.messages,
+      [convId]: (s.messages[convId] || []).filter(m => m._id !== messageId)
+    }
+  })),
   unreadCounts: {},
   incrementUnread: (convId) => set((s) => ({
     unreadCounts: {
