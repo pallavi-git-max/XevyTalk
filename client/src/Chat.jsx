@@ -1552,52 +1552,28 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
   const handleSend = async () => {
     if (!text.trim() || !socket || !activeId) return
 
-    try {
-      // Get or generate encryption key for this conversation
-      let keyString = getEncryptionKey(activeId)
-      let key
-
-      if (!keyString) {
-        // Generate new key for this conversation
-        key = await generateKey()
-        keyString = await exportKey(key)
-        setEncryptionKey(activeId, keyString)
-      } else {
-        key = await importKey(keyString)
-      }
-
-      // Encrypt the message
-      const encryptedContent = await encryptMessage(text, key)
-
-      const tempId = Math.random().toString(36).slice(2)
-      // Store decrypted version locally for display
-      const msg = {
-        _id: tempId,
-        tempId,
-        conversation: activeId,
-        sender: user,
-        content: text, // Store decrypted locally
-        encrypted: true,
-        createdAt: new Date().toISOString(),
-        deliveredTo: [],
-        seenBy: []
-      }
-      pushMessage(activeId, msg)
-
-      // Send encrypted version to server
-      socket.emit('message_send', {
-        conversationId: activeId,
-        content: encryptedContent,
-        tempId,
-        encrypted: true
-      })
-
-      setText('')
-      socket.emit('stop_typing', { conversationId: activeId })
-    } catch (error) {
-      console.error('Failed to encrypt message:', error)
-      alert('Failed to send encrypted message')
+    const tempId = Math.random().toString(36).slice(2)
+    const msg = {
+      _id: tempId,
+      tempId,
+      conversation: activeId,
+      sender: user,
+      content: text,
+      createdAt: new Date().toISOString(),
+      deliveredTo: [],
+      seenBy: []
     }
+    pushMessage(activeId, msg)
+
+    // Send plain text to server (server will handle encryption at rest)
+    socket.emit('message_send', {
+      conversationId: activeId,
+      content: text,
+      tempId
+    })
+
+    setText('')
+    socket.emit('stop_typing', { conversationId: activeId })
   }
 
   const isTyping = (typingUsers[activeId] && [...typingUsers[activeId]].filter(id => id !== user._id).length > 0)
