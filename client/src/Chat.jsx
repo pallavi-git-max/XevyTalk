@@ -1849,7 +1849,6 @@ function MessageBubble({ m, me, totalMembers, conv, onInfo, selected, onSelect }
         <div className={`text-[10px] mt-1 flex items-center gap-2 ${mine ? 'text-white/80' : 'text-gray-500'}`}>
           <span>{dayjs(m.createdAt).format('HH:mm')}</span>
           {mine && <StatusIcon m={m} me={me} totalMembers={totalMembers} />}
-          <button onClick={onInfo} className={`ml-1 ${mine ? 'text-white/80' : 'text-gray-400'} hover:underline`}>info</button>
         </div>
       </div>
     </div>
