@@ -11,7 +11,9 @@ import { generateKey, exportKey, importKey, encryptMessage, decryptMessage, isEn
 
 dayjs.extend(relativeTime)
 
-const API = 'http://localhost:4000'
+import API_URL from './config';
+
+const API = API_URL;
 
 const StatusIcon = ({ m, me, totalMembers }) => {
   const others = totalMembers - 1

@@ -4,7 +4,9 @@ import { useStore } from './store'
 import { createSocket } from './socket'
 import NewChatModal from './NewChatModal'
 
-const API = 'http://localhost:4000'
+import API_URL from './config';
+
+const API = API_URL;
 
 const StatusIcon = ({ m, me, totalMembers }) => {
   const others = totalMembers - 1
@@ -138,8 +140,8 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
         <button
           onClick={() => setActiveTab('direct')}
           className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors relative ${activeTab === 'direct'
-              ? 'bg-primary text-white'
-              : 'bg-white text-gray-600 hover:bg-gray-50'
+            ? 'bg-primary text-white'
+            : 'bg-white text-gray-600 hover:bg-gray-50'
             }`}
         >
           Direct
@@ -152,8 +154,8 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
         <button
           onClick={() => setActiveTab('group')}
           className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors relative ${activeTab === 'group'
-              ? 'bg-primary text-white'
-              : 'bg-white text-gray-600 hover:bg-gray-50'
+            ? 'bg-primary text-white'
+            : 'bg-white text-gray-600 hover:bg-gray-50'
             }`}
         >
           Groups

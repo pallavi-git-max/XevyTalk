@@ -1,6 +1,7 @@
 import { io } from 'socket.io-client'
+import API_URL from './config'
 
-export const createSocket = (token) => io('http://localhost:4000', {
+export const createSocket = (token) => io(API_URL, {
   transports: ['websocket', 'polling'],
   autoConnect: true,
   reconnection: true,

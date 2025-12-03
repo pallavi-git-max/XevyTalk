@@ -5,7 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "node src/index.js",
-    "build": "echo 'no build step'",
+    "build": "echo 'Server ready for deployment'",
     "start": "node src/index.js"
   },
   "dependencies": {

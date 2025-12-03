@@ -2,7 +2,9 @@ import React, { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 
-const API = 'http://localhost:4000'
+import API_URL from '../config';
+
+const API = API_URL;
 
 export default function Register() {
   const nav = useNavigate()
@@ -18,12 +20,12 @@ export default function Register() {
     setLoading(true)
     try {
       const r = await fetch(`${API}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) })
-      const j = await r.json().catch(()=>({ error: 'Register failed' }))
+      const j = await r.json().catch(() => ({ error: 'Register failed' }))
       if (!r.ok) {
         setError(j.error || 'Register failed')
       } else {
         setOk(true)
-        setTimeout(()=> nav('/login'), 800)
+        setTimeout(() => nav('/login'), 800)
       }
     } finally {
       setLoading(false)
@@ -41,8 +43,8 @@ export default function Register() {
         {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
         {ok && <div className="text-sm text-green-600 mb-3">Account created. Redirecting to login…</div>}
         <div className="space-y-3">
-          <input value={username} onChange={e=>setUsername(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Username" required />
-          <input type="password" value={password} onChange={e=>setPassword(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Password" required />
+          <input value={username} onChange={e => setUsername(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Username" required />
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Password" required />
           <button disabled={loading} className="w-full bg-primary text-white rounded-xl py-2 disabled:opacity-50">{loading ? 'Creating...' : 'Create account'}</button>
         </div>
         <div className="text-sm text-gray-600 mt-4">Already have an account? <Link className="text-primary" to="/login">Sign in</Link></div>

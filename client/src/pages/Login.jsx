@@ -2,7 +2,9 @@ import React, { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useStore } from '../store'
 
-const API = 'http://localhost:4000'
+import API_URL from '../config';
+
+const API = API_URL;
 
 export default function Login() {
   const nav = useNavigate()
@@ -19,7 +21,7 @@ export default function Login() {
     try {
       const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) })
       if (!r.ok) {
-        const j = await r.json().catch(()=>({ error: 'Login failed' }))
+        const j = await r.json().catch(() => ({ error: 'Login failed' }))
         setError(j.error || 'Login failed')
       } else {
         const { token, user } = await r.json()
@@ -44,8 +46,8 @@ export default function Login() {
         <div className="text-xl font-semibold mb-4">Welcome back</div>
         {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
         <div className="space-y-3">
-          <input value={username} onChange={e=>setUsername(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Username" required />
-          <input type="password" value={password} onChange={e=>setPassword(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Password" required />
+          <input value={username} onChange={e => setUsername(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Username" required />
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Password" required />
           <button disabled={loading} className="w-full bg-primary text-white rounded-xl py-2 disabled:opacity-50">{loading ? 'Signing in...' : 'Sign in'}</button>
         </div>
         <div className="text-sm text-gray-600 mt-4">No account? <Link className="text-primary" to="/register">Create one</Link></div>
