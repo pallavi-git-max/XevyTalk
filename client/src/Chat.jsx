@@ -483,18 +483,23 @@ export default function Chat() {
 
       s.on('message_new', (msg) => {
         const convId = String(msg.conversation)
+        const state = useStore.getState()
+        const myId = state.user?._id ? String(state.user._id) : ''
         const senderId = String(msg.sender?._id || msg.sender)
-        const myId = user?._id ? String(user._id) : ''
+
         if (senderId === myId && msg.tempId) {
           replaceTempMessage(convId, msg.tempId, msg)
         } else {
           pushMessage(convId, msg)
         }
+
         // Update lastMessageAt so lists can sort by recent activity
         setConversations(cs => cs.map(c => c._id === convId ? { ...c, lastMessageAt: msg.createdAt || c.lastMessageAt || new Date().toISOString() } : c))
-        const state = useStore.getState()
+
         const isFromMe = senderId === myId
         const isActive = String(state.activeId || '') === convId
+
+        // Increment unread count if message is not from me and conversation is not active
         if (!isFromMe && !isActive) {
           state.incrementUnread?.(convId)
           const conv = (state.conversations || []).find(c => String(c._id) === convId)
@@ -515,6 +520,7 @@ export default function Chat() {
             createdAt: msg.createdAt,
           })
         }
+
         if (!isFromMe) {
           s.emit('message_delivered', { messageId: msg._id })
         }
@@ -1522,8 +1528,8 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
     return name.toLowerCase().includes(q.toLowerCase())
   })
 
-  // Search results from all users
-  const searchResults = q ? allUsers.filter(u =>
+  // Search results from all users (only for Direct tab)
+  const searchResults = (tab === 'direct' && q) ? allUsers.filter(u =>
     u.username?.toLowerCase().includes(q.toLowerCase()) ||
     u.email?.toLowerCase().includes(q.toLowerCase())
   ) : []
@@ -1561,7 +1567,6 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
     <div className="h-full bg-sky-50/40 p-4">
       <div className="flex items-center justify-between mb-4">
         <div className="font-semibold">Chats</div>
-        <button onClick={onNew} className="text-xs bg-primary text-white rounded-lg px-2 py-1">New</button>
       </div>
       <div className="grid grid-cols-2 text-xs bg-white rounded-xl shadow-soft overflow-hidden mb-3">
         {['Direct', 'Group'].map((t) => {
@@ -1569,7 +1574,7 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
           const active = tab === key
           const hasUnread = key === 'direct' ? directUnread > 0 : groupUnread > 0
           return (
-            <button key={t} onClick={() => setLeftTab(key)} className={`py-2 relative ${active ? 'bg-primary text-white' : 'text-gray-600'}`}>
+            <button key={t} onClick={() => { setLeftTab(key); setQ(''); setSearchMode(false) }} className={`py-2 relative ${active ? 'bg-primary text-white' : 'text-gray-600'}`}>
               {t}
               {hasUnread && (
                 <span className="absolute top-1 right-2 w-2 h-2 bg-red-500 rounded-full"></span>
@@ -1586,29 +1591,41 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
             setSearchMode(e.target.value.length > 0)
           }}
           className="w-full rounded-xl border-0 bg-white shadow-soft px-3 py-2 text-sm"
-          placeholder="Search conversations or users..."
+          placeholder={tab === 'direct' ? 'Search conversations or users...' : 'Search groups...'}
         />
       </div>
-      <div className="space-y-2 overflow-y-auto h-[calc(100%-140px)] pr-2">
-        {searchMode ? (
-          searchResults.length > 0 ? (
-            searchResults.map(u => (
-              <button key={u._id} onClick={() => startDirect(u._id)} className="w-full text-left bg-white rounded-xl px-3 py-2 shadow-soft hover:shadow">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-gray-200 text-gray-700 grid place-items-center font-semibold">
-                    {u.username?.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex-1">
-                    <div className="font-medium text-sm">{u.username}</div>
-                    <div className="text-xs text-gray-500">{u.email}</div>
-                  </div>
+
+      {/* Create New Group button (only in Group tab) */}
+      {tab === 'group' && (
+        <button
+          onClick={onNew}
+          className="w-full mb-3 bg-primary text-white rounded-xl px-3 py-2 text-sm font-medium hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
+        >
+          <span>+</span>
+          <span>Create New Group</span>
+        </button>
+      )}
+
+      <div className="space-y-2 overflow-y-auto h-[calc(100%-180px)] pr-2">
+        {tab === 'direct' && searchMode && searchResults.length > 0 ? (
+          // Show user search results in Direct tab
+          searchResults.map(u => (
+            <button key={u._id} onClick={() => startDirect(u._id)} className="w-full text-left bg-white rounded-xl px-3 py-2 shadow-soft hover:shadow">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-gray-200 text-gray-700 grid place-items-center font-semibold">
+                  {u.username?.charAt(0).toUpperCase()}
                 </div>
-              </button>
-            ))
-          ) : (
-            <div className="text-center text-gray-500 text-sm py-4">No users found</div>
-          )
+                <div className="flex-1">
+                  <div className="font-medium text-sm">{u.username}</div>
+                  <div className="text-xs text-gray-500">{u.email}</div>
+                </div>
+              </div>
+            </button>
+          ))
+        ) : tab === 'direct' && searchMode && searchResults.length === 0 && list.length === 0 ? (
+          <div className="text-center text-gray-500 text-sm py-4">No users or conversations found</div>
         ) : (
+          // Show conversations (filtered by search)
           list.map(c => {
             const other = c.type === 'group' ? null : c.members.find(m => m._id !== user._id)
             const isOnline = other && dayjs().diff(dayjs(other.lastSeenAt), 'minute') < 5
