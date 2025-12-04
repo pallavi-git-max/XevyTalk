@@ -19,7 +19,30 @@ const __dirname = path.dirname(__filename);
 dotenv.config();
 
 const app = express();
-app.use(cors({ origin: true, credentials: true }));
+
+// Enhanced CORS configuration for production
+const allowedOrigins = [
+  'https://xevytalk-client.onrender.com',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Allow all origins in development
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id']
+}));
+
 app.use(express.json());
 
 // Ensure uploads directory exists
@@ -28,8 +51,13 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Serve uploaded files
-app.use('/uploads', express.static(uploadDir));
+// Serve uploaded files with proper headers
+app.use('/uploads', express.static(uploadDir, {
+  setHeaders: (res, path) => {
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.set('Access-Control-Allow-Origin', '*');
+  }
+}));
 
 // Configure Multer
 const storage = multer.diskStorage({
@@ -46,7 +74,13 @@ const upload = multer({ storage: storage });
 
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
-  cors: { origin: true, credentials: true }
+  cors: {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  transports: ['websocket', 'polling'],
+  allowEIO3: true
 });
 
 const MONGO_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/chatbot';
@@ -91,11 +125,11 @@ const decryptText = (packed = '') => {
 
 // Models
 const userSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true },
+  username: { type: String, required: true }, // Display name
+  email: { type: String, required: true, unique: true }, // Login email
   avatar: { type: String },
   lastSeenAt: { type: Date, default: Date.now },
   passwordHash: { type: String },
-  email: { type: String },
   phone: { type: String },
   address: { type: String }
 }, { timestamps: true });
@@ -179,22 +213,52 @@ app.post('/api/auth/guest', async (req, res) => {
 
 // Auth: register, login, me
 app.post('/api/auth/register', async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: 'username and password required' });
-  const exists = await User.findOne({ username });
-  if (exists) return res.status(409).json({ error: 'username already exists' });
+  const { name, email, password } = req.body || {};
+
+  // Validate required fields
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: 'Name, email and password are required' });
+  }
+
+  // Validate email domain
+  if (!email.endsWith('@xevyte.com')) {
+    return res.status(400).json({ error: 'Email must be from @xevyte.com domain' });
+  }
+
+  // Check if email already exists
+  const exists = await User.findOne({ email });
+  if (exists) {
+    return res.status(409).json({ error: 'Email already registered' });
+  }
+
   const passwordHash = await bcrypt.hash(password, 10);
-  const u = new User({ username, passwordHash, avatar: `https://api.dicebear.com/8.x/pixel-art/svg?seed=${encodeURIComponent(username)}` });
+  const u = new User({
+    username: name,
+    email,
+    passwordHash,
+    avatar: `https://api.dicebear.com/8.x/pixel-art/svg?seed=${encodeURIComponent(name)}`
+  });
   await u.save();
   res.json({ token: signToken(u), user: u });
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body || {};
-  const u = await User.findOne({ username });
-  if (!u || !u.passwordHash) return res.status(401).json({ error: 'invalid credentials' });
+  const { email, password } = req.body || {};
+
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password required' });
+  }
+
+  const u = await User.findOne({ email });
+  if (!u || !u.passwordHash) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
   const ok = await bcrypt.compare(password, u.passwordHash);
-  if (!ok) return res.status(401).json({ error: 'invalid credentials' });
+  if (!ok) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
   res.json({ token: signToken(u), user: u });
 });
 
@@ -202,7 +266,12 @@ app.post('/api/upload', auth, upload.single('file'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
-  const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+
+  // Always use HTTPS for production URLs
+  const protocol = process.env.NODE_ENV === 'production' ? 'https' : req.protocol;
+  const host = req.get('host');
+  const fileUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
+
   res.json({
     url: fileUrl,
     name: req.file.originalname,

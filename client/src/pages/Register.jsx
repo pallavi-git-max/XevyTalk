@@ -8,7 +8,8 @@ const API = API_URL;
 
 export default function Register() {
   const nav = useNavigate()
-  const [username, setUsername] = useState('')
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -17,9 +18,20 @@ export default function Register() {
   const submit = async (e) => {
     e.preventDefault()
     setError('')
+
+    // Validate email domain
+    if (!email.endsWith('@xevyte.com')) {
+      setError('Email must be from @xevyte.com domain')
+      return
+    }
+
     setLoading(true)
     try {
-      const r = await fetch(`${API}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) })
+      const r = await fetch(`${API}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password })
+      })
       const j = await r.json().catch(() => ({ error: 'Register failed' }))
       if (!r.ok) {
         setError(j.error || 'Register failed')
@@ -43,11 +55,39 @@ export default function Register() {
         {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
         {ok && <div className="text-sm text-green-600 mb-3">Account created. Redirecting to login…</div>}
         <div className="space-y-3">
-          <input value={username} onChange={e => setUsername(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Username" required />
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Password" required />
-          <button disabled={loading} className="w-full bg-primary text-white rounded-xl py-2 disabled:opacity-50">{loading ? 'Creating...' : 'Create account'}</button>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2"
+            placeholder="Full Name"
+            required
+          />
+          <input
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2"
+            placeholder="Email (must be @xevyte.com)"
+            required
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2"
+            placeholder="Password"
+            required
+          />
+          <button
+            disabled={loading}
+            className="w-full bg-primary text-white rounded-xl py-2 disabled:opacity-50"
+          >
+            {loading ? 'Creating...' : 'Create account'}
+          </button>
         </div>
-        <div className="text-sm text-gray-600 mt-4">Already have an account? <Link className="text-primary" to="/login">Sign in</Link></div>
+        <div className="text-sm text-gray-600 mt-4">
+          Already have an account? <Link className="text-primary" to="/login">Sign in</Link>
+        </div>
       </form>
     </div>
   )

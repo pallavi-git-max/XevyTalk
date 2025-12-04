@@ -9,7 +9,7 @@ const API = API_URL;
 export default function Login() {
   const nav = useNavigate()
   const { setToken, setUser } = useStore()
-  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -19,7 +19,11 @@ export default function Login() {
     setError('')
     setLoading(true)
     try {
-      const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) })
+      const r = await fetch(`${API}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      })
       if (!r.ok) {
         const j = await r.json().catch(() => ({ error: 'Login failed' }))
         setError(j.error || 'Login failed')
@@ -46,11 +50,32 @@ export default function Login() {
         <div className="text-xl font-semibold mb-4">Welcome back</div>
         {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
         <div className="space-y-3">
-          <input value={username} onChange={e => setUsername(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Username" required />
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2" placeholder="Password" required />
-          <button disabled={loading} className="w-full bg-primary text-white rounded-xl py-2 disabled:opacity-50">{loading ? 'Signing in...' : 'Sign in'}</button>
+          <input
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2"
+            placeholder="Email"
+            required
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2"
+            placeholder="Password"
+            required
+          />
+          <button
+            disabled={loading}
+            className="w-full bg-primary text-white rounded-xl py-2 disabled:opacity-50"
+          >
+            {loading ? 'Signing in...' : 'Sign in'}
+          </button>
         </div>
-        <div className="text-sm text-gray-600 mt-4">No account? <Link className="text-primary" to="/register">Create one</Link></div>
+        <div className="text-sm text-gray-600 mt-4">
+          No account? <Link className="text-primary" to="/register">Create one</Link>
+        </div>
       </form>
     </div>
   )

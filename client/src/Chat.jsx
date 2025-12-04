@@ -15,16 +15,7 @@ import API_URL from './config';
 
 const API = API_URL;
 
-const StatusIcon = ({ m, me, totalMembers }) => {
-  const others = totalMembers - 1
-  const delivered = (m.deliveredTo || []).map(String).filter(id => id !== String(me)).length >= others
-  const seen = (m.seenBy || []).map(String).filter(id => id !== String(me)).length >= others
-  return (
-    <span className="text-xs text-gray-400 ml-2">
-      {seen ? '✓✓ Seen' : delivered ? '✓✓ Delivered' : '✓ Sent'}
-    </span>
-  )
-}
+
 
 function VideoTile({ stream, muted }) {
   const ref = useRef(null)
@@ -1806,13 +1797,17 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
               {other && (
                 <div className="text-xs flex items-center gap-1">
                   {/* Show online if last seen within 5 minutes */}
-                  {dayjs().diff(dayjs(other.lastSeenAt), 'minute') < 5 ? (
+                  {other.lastSeenAt && dayjs().diff(dayjs(other.lastSeenAt), 'minute') < 5 ? (
                     <>
                       <span className="w-2 h-2 bg-green-600 rounded-full"></span>
                       <span className="text-green-600">Online</span>
                     </>
                   ) : (
-                    <span className="text-gray-500">Last seen {dayjs(other.lastSeenAt).fromNow?.() || dayjs(other.lastSeenAt).format('HH:mm')}</span>
+                    <span className="text-gray-500">
+                      {other.lastSeenAt
+                        ? `Last seen ${dayjs(other.lastSeenAt).fromNow()}`
+                        : 'Offline'}
+                    </span>
                   )}
                 </div>
               )}
@@ -1968,6 +1963,45 @@ function MessageBubble({ m, me, totalMembers, conv, onInfo, selected, onSelect }
         </div>
       </div>
     </div>
+  )
+}
+
+function StatusIcon({ m, me, totalMembers }) {
+  // Logic:
+  // 1. If seenBy includes everyone (or at least one other person in direct), show Seen
+  // 2. If deliveredTo includes everyone (or at least one other person in direct), show Delivered
+  // 3. Else Sent
+
+  // Exclude self from counts
+  const seenCount = (m.seenBy || []).filter(id => String(id) !== String(me)).length
+  const deliveredCount = (m.deliveredTo || []).filter(id => String(id) !== String(me)).length
+
+  // For direct chat, we just need 1 other person
+  // For group, we ideally want everyone, but for now let's say if ANYONE saw it, it's seen
+
+  if (seenCount > 0) {
+    return (
+      <span className="flex items-center gap-1" title={`Seen by ${seenCount}`}>
+        <span className="text-xs">✔✔</span>
+        <span>Seen</span>
+      </span>
+    )
+  }
+
+  if (deliveredCount > 0) {
+    return (
+      <span className="flex items-center gap-1" title={`Delivered to ${deliveredCount}`}>
+        <span className="text-[10px]">●</span>
+        <span>Delivered</span>
+      </span>
+    )
+  }
+
+  return (
+    <span className="flex items-center gap-1" title="Sent">
+      <span className="text-[10px]">○</span>
+      <span>Sent</span>
+    </span>
   )
 }
 
