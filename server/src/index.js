@@ -33,15 +33,19 @@ app.use(cors({
     // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(null, true); // Allow all origins in development
+      return callback(null, true);
     }
+    // In production, log and allow (for debugging)
+    console.log('CORS request from origin:', origin);
+    callback(null, true);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id']
 }));
+
+// Handle OPTIONS requests explicitly
+app.options('*', cors());
 
 app.use(express.json());
 
@@ -497,12 +501,23 @@ io.on('connection', (socket) => {
 
     const encContent = content ? encryptText(content) : '';
 
+    // Parse attachments if it's a string (Socket.IO sometimes stringifies)
+    let parsedAttachments = attachments;
+    if (typeof attachments === 'string') {
+      try {
+        parsedAttachments = JSON.parse(attachments);
+      } catch (e) {
+        console.error('Failed to parse attachments:', e);
+        parsedAttachments = [];
+      }
+    }
+
     const msg = new Message({
       conversation: conversationId,
       sender: user._id,
       contentEnc: encContent,
       tempId,
-      attachments
+      attachments: parsedAttachments || []
     });
     await msg.save();
 
