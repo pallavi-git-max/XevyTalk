@@ -579,6 +579,16 @@ export default function Chat() {
         })
       })
 
+      // Listen for conversation deletions
+      s.on('conversation_deleted', ({ conversationId }) => {
+        console.log('Conversation deleted:', conversationId)
+        setConversations(cs => cs.filter(c => c._id !== conversationId))
+        // If the deleted conversation was active, clear it
+        if (activeId === conversationId) {
+          setActiveId(null)
+        }
+      })
+
       s.on('call_incoming', (payload) => {
         if (!payload) return
         if (currentCallRef.current) return
@@ -1487,9 +1497,25 @@ function Toast({ notification, onClose }) {
 }
 
 function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
-  const { leftTab, setLeftTab, unreadCounts } = useStore()
+  const { leftTab, setLeftTab, unreadCounts, token, setConversations, setActiveId } = useStore()
   const tab = leftTab
   const [q, setQ] = useState('')
+  const [allUsers, setAllUsers] = useState([])
+  const [searchMode, setSearchMode] = useState(false)
+
+  // Fetch all users for search
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${API}/api/users`)
+        const list = await r.json()
+        setAllUsers(list.filter(u => String(u._id) !== String(user._id)))
+      } catch (e) {
+        console.error('Failed to load users', e)
+      }
+    })()
+  }, [user._id])
+
   const sorted = [...conversations].sort((a, b) => {
     const ta = new Date(a.lastMessageAt || a.updatedAt || a.createdAt || 0).getTime()
     const tb = new Date(b.lastMessageAt || b.updatedAt || b.createdAt || 0).getTime()
@@ -1499,10 +1525,37 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
   const list = sorted.filter(c => {
     if (tab === 'direct' && c.type !== 'direct') return false
     if (tab === 'group' && c.type !== 'group') return false
-    if (c.type === 'group' && (c.name || '').toLowerCase() === 'lobby') return false
-    const name = c.type === 'group' ? (c.name || 'Group') : (c.members.find(m => m._id !== user._id)?.username || 'Direct')
+    if (!q) return true
+    const other = c.members?.find(m => String(m._id) !== String(user._id))
+    const name = c.type === 'group' ? (c.name || '') : (other?.username || '')
     return name.toLowerCase().includes(q.toLowerCase())
   })
+
+  // Search results from all users
+  const searchResults = q ? allUsers.filter(u =>
+    u.username?.toLowerCase().includes(q.toLowerCase()) ||
+    u.email?.toLowerCase().includes(q.toLowerCase())
+  ) : []
+
+  const startDirect = async (userId) => {
+    try {
+      const r = await fetch(`${API}/api/conversations/direct`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ userId })
+      })
+      const conv = await r.json()
+      setConversations(cs => (cs.find(c => c._id === conv._id) ? cs : [conv, ...cs]))
+      setActiveId(conv._id)
+      setQ('')
+      setSearchMode(false)
+    } catch (e) {
+      console.error('Failed to start conversation', e)
+    }
+  }
 
   // Calculate unread counts for each tab
   const directUnread = conversations
@@ -1535,50 +1588,79 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
         })}
       </div>
       <div className="mb-2">
-        <input value={q} onChange={(e) => setQ(e.target.value)} className="w-full rounded-xl border-0 bg-white shadow-soft px-3 py-2 text-sm" placeholder="Search" />
+        <input
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value)
+            setSearchMode(e.target.value.length > 0)
+          }}
+          className="w-full rounded-xl border-0 bg-white shadow-soft px-3 py-2 text-sm"
+          placeholder="Search conversations or users..."
+        />
       </div>
       <div className="space-y-2 overflow-y-auto h-[calc(100%-140px)] pr-2">
-        {list.map(c => {
-          const other = c.type === 'group' ? null : c.members.find(m => m._id !== user._id)
-          const isOnline = other && dayjs().diff(dayjs(other.lastSeenAt), 'minute') < 5
-          const unread = (unreadCounts || {})[c._id] || 0
-
-          return (
-            <button key={c._id} onClick={() => onPick(c._id)} className={`w-full text-left bg-white rounded-xl px-3 py-2 shadow-soft hover:shadow ${activeId === c._id ? 'ring-2 ring-primary/50' : ''}`}>
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 grid place-items-center font-semibold">
-                  {c.type === 'group' ? (c.name?.charAt(0) || 'G') : (other?.username?.charAt(0) || 'D')}
+        {searchMode ? (
+          searchResults.length > 0 ? (
+            searchResults.map(u => (
+              <button key={u._id} onClick={() => startDirect(u._id)} className="w-full text-left bg-white rounded-xl px-3 py-2 shadow-soft hover:shadow">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-gray-200 text-gray-700 grid place-items-center font-semibold">
+                    {u.username?.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex-1">
+                    <div className="font-medium text-sm">{u.username}</div>
+                    <div className="text-xs text-gray-500">{u.email}</div>
+                  </div>
                 </div>
-                <div className="flex-1 flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-sm">{c.type === 'group' ? c.name : (other?.username || 'Direct')}</div>
-                    {c.type !== 'group' && isOnline && (
-                      <div className="text-[10px] text-green-600 flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 bg-green-600 rounded-full"></span>
-                        <span>Online</span>
+              </button>
+            ))
+          ) : (
+            <div className="text-center text-gray-500 text-sm py-4">No users found</div>
+          )
+        ) : (
+          list.map(c => {
+            const other = c.type === 'group' ? null : c.members.find(m => m._id !== user._id)
+            const isOnline = other && dayjs().diff(dayjs(other.lastSeenAt), 'minute') < 5
+            const unread = (unreadCounts || {})[c._id] || 0
+
+            return (
+              <button key={c._id} onClick={() => onPick(c._id)} className={`w-full text-left bg-white rounded-xl px-3 py-2 shadow-soft hover:shadow ${activeId === c._id ? 'ring-2 ring-primary/50' : ''}`}>
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 grid place-items-center font-semibold">
+                    {c.type === 'group' ? (c.name?.charAt(0) || 'G') : (other?.username?.charAt(0) || 'D')}
+                  </div>
+                  <div className="flex-1 flex items-center justify-between">
+                    <div>
+                      <div className="font-medium text-sm">{c.type === 'group' ? c.name : (other?.username || 'Direct')}</div>
+                      {c.type !== 'group' && isOnline && (
+                        <div className="text-[10px] text-green-600 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 bg-green-600 rounded-full"></span>
+                          <span>Online</span>
+                        </div>
+                      )}
+                    </div>
+                    {unread > 0 && (
+                      <div className="ml-2 min-w-[18px] px-1 py-0.5 rounded-full bg-red-500 text-white text-[10px] text-center">
+                        {unread > 9 ? '9+' : unread}
                       </div>
                     )}
                   </div>
-                  {unread > 0 && (
-                    <div className="ml-2 min-w-[18px] px-1 py-0.5 rounded-full bg-red-500 text-white text-[10px] text-center">
-                      {unread > 9 ? '9+' : unread}
-                    </div>
-                  )}
                 </div>
-              </div>
-            </button>
-          )
-        })}
+              </button>
+            )
+          })
+        )}
       </div>
     </div>
   )
 }
 
 function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, refreshMessages, onStartCall, selectedMessage, setSelectedMessage }) {
-  const { activeId, messages, pushMessage, token, setEncryptionKey, getEncryptionKey } = useStore()
+  const { activeId, messages, pushMessage, token, conversations, setConversations, setActiveId } = useStore()
   const [text, setText] = useState('')
-  const [showCallMenu, setShowCallMenu] = useState(false)
   const [showEmoji, setShowEmoji] = useState(false)
+  const [showCallMenu, setShowCallMenu] = useState(false)
+  const [showOptionsMenu, setShowOptionsMenu] = useState(false)
   const listRef = useRef(null)
   const fileInputRef = useRef(null)
   const convMessages = activeId ? (messages[activeId] || []) : []
@@ -1777,6 +1859,40 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
               {conv?.type === 'group' && (
                 <button title="Group Info" className="p-2 rounded-lg hover:bg-gray-100" onClick={() => setShowMembers(true)}>ℹ️</button>
               )}
+              <div className="relative">
+                <button
+                  title="Options"
+                  className="w-9 h-9 rounded-full hover:bg-gray-100 flex items-center justify-center text-base"
+                  onClick={() => setShowOptionsMenu(v => !v)}
+                >
+                  <span>⋯</span>
+                </button>
+                {showOptionsMenu && (
+                  <div className="absolute right-0 mt-1 w-48 bg-white rounded-xl shadow-lg border text-sm z-10">
+                    <button
+                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-red-50 text-red-600 text-left"
+                      onClick={async () => {
+                        if (!confirm('Delete this conversation? This cannot be undone.')) return
+                        try {
+                          await fetch(`${API}/api/conversations/${activeId}`, {
+                            method: 'DELETE',
+                            headers: { Authorization: `Bearer ${token}` }
+                          })
+                          setConversations(cs => cs.filter(c => c._id !== activeId))
+                          setActiveId(null)
+                          setShowOptionsMenu(false)
+                        } catch (e) {
+                          console.error(e)
+                          alert('Failed to delete conversation')
+                        }
+                      }}
+                    >
+                      <span className="text-base">🗑️</span>
+                      <span>Delete Conversation</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </>
         )}
@@ -1862,7 +1978,10 @@ function RightPanel({ user, onOpenProfile }) {
     (async () => {
       const r = await fetch(`${API}/api/users`)
       const list = await r.json()
-      setUsers(list.filter(u => String(u._id) !== String(user._id)))
+      // Show only 5 newest users
+      const filtered = list.filter(u => String(u._id) !== String(user._id))
+      const sorted = filtered.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      setUsers(sorted.slice(0, 5))
     })()
   }, [user._id])
 

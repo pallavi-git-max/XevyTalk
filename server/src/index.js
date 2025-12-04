@@ -327,6 +327,33 @@ app.get('/api/messages/:conversationId', auth, async (req, res) => {
   res.json(safe);
 });
 
+app.delete('/api/conversations/:id', auth, async (req, res) => {
+  try {
+    const conv = await Conversation.findById(req.params.id);
+    if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+    // Check if user is a member
+    if (!conv.members.some(m => String(m) === String(req.user._id))) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    // Delete all messages in this conversation
+    await Message.deleteMany({ conversation: req.params.id });
+
+    // Delete the conversation
+    await Conversation.findByIdAndDelete(req.params.id);
+
+    // Notify all members that conversation was deleted
+    conv.members.forEach(memberId => {
+      io.to(`user:${memberId}`).emit('conversation_deleted', { conversationId: req.params.id });
+    });
+
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.delete('/api/messages/:id', auth, async (req, res) => {
   try {
     const msg = await Message.findById(req.params.id);
