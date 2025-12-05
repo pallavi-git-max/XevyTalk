@@ -1802,6 +1802,13 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
   const membersCount = conv?.members?.length || 1
   const other = conv?.members?.find(m => String(m._id) !== String(user._id))
 
+  // Close menus when switching chats
+  useEffect(() => {
+    setShowOptionsMenu(false)
+    setShowCallMenu(false)
+    setShowEmoji(false)
+  }, [activeId])
+
   useEffect(() => {
     listRef.current?.lastElementChild?.scrollIntoView({ behavior: 'smooth' })
   }, [convMessages.length])
@@ -2290,9 +2297,149 @@ function StatusIcon({ m, me, totalMembers }) {
   )
 }
 
+function CreateUserModal({ onClose, token }) {
+  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState(null)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+    setSuccess(null)
+    setLoading(true)
+
+    try {
+      const res = await fetch(`${API}/api/admin/create-user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ username, email })
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to create user')
+      }
+
+      setSuccess(data)
+      setUsername('')
+      setEmail('')
+
+      // Auto-close after 3 seconds
+      setTimeout(() => {
+        onClose()
+      }, 3000)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl p-6 w-[90%] max-w-md" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold text-gray-900">Create User</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            {error}
+          </div>
+        )}
+
+        {success && (
+          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+            <div className="text-green-700 font-medium mb-2">✓ {success.message}</div>
+            <div className="text-sm text-green-600 space-y-1">
+              <div><strong>Username:</strong> {success.user.username}</div>
+              <div><strong>Email:</strong> {success.user.email}</div>
+              {success.emailSent ? (
+                <div className="mt-2 p-2 bg-green-100 rounded">
+                  <div className="flex items-center gap-2">
+                    <span>📧</span>
+                    <span>Login credentials have been sent to the user's email</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-2 p-2 bg-yellow-100 rounded">
+                  <div className="text-yellow-700 text-xs">
+                    <strong>Email failed.</strong> Password: {success.password}
+                  </div>
+                  <div className="text-xs mt-1">Please share these credentials manually</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="w-full rounded-xl border-gray-300 bg-gray-50 px-4 py-2 focus:ring-2 focus:ring-primary focus:border-transparent"
+              placeholder="Enter username"
+              required
+              disabled={loading || success}
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full rounded-xl border-gray-300 bg-gray-50 px-4 py-2 focus:ring-2 focus:ring-primary focus:border-transparent"
+              placeholder="user@xevyte.com"
+              required
+              disabled={loading || success}
+            />
+            <div className="text-xs text-gray-500 mt-1">Must be @xevyte.com domain</div>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 rounded-xl border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+              disabled={loading}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 px-4 py-2 rounded-xl bg-primary text-white hover:bg-primary-dark transition-colors disabled:opacity-50"
+              disabled={loading || success}
+            >
+              {loading ? 'Creating...' : 'Create User'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function RightPanel({ user, onOpenProfile }) {
   const { token, setConversations, setActiveId, notifications, clearNotifications } = useStore()
   const [users, setUsers] = useState([])
+  const [showCreateUser, setShowCreateUser] = useState(false)
+
   useEffect(() => {
     (async () => {
       const r = await fetch(`${API}/api/users`)
@@ -2315,6 +2462,20 @@ function RightPanel({ user, onOpenProfile }) {
     <div className="h-full bg-sky-50/40 p-4">
       <div className="h-full bg-white rounded-2xl shadow-soft p-4 overflow-y-auto">
         <ProfileCard user={user} onOpenProfile={onOpenProfile} />
+
+        {/* Admin: Create User Button */}
+        {user.isAdmin && (
+          <div className="mt-4 mb-4">
+            <button
+              onClick={() => setShowCreateUser(true)}
+              className="w-full bg-primary hover:bg-primary-dark text-white rounded-xl px-4 py-2.5 font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              <span>➕</span>
+              <span>Create User</span>
+            </button>
+          </div>
+        )}
+
         <div className="flex items-center justify-between mb-3 mt-4">
           <div className="font-semibold">Notification</div>
           {notifications && notifications.length > 0 && (
@@ -2379,6 +2540,14 @@ function RightPanel({ user, onOpenProfile }) {
           {users.length === 0 && (<div className="text-xs text-gray-500">No suggestions</div>)}
         </div>
       </div>
+
+      {/* Create User Modal */}
+      {showCreateUser && (
+        <CreateUserModal
+          onClose={() => setShowCreateUser(false)}
+          token={token}
+        />
+      )}
     </div>
   )
 }

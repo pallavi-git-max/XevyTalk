@@ -12,6 +12,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import nodemailer from 'nodemailer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -127,6 +128,75 @@ const decryptText = (packed = '') => {
   }
 };
 
+// Email configuration
+const emailTransporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: 'admin@xevyte.com',
+    pass: 'figjfdnpaaygcfrj' // App password
+  }
+});
+
+// Function to send welcome email with credentials
+const sendWelcomeEmail = async (email, username, password) => {
+  const mailOptions = {
+    from: '"XevyTalk Admin" <admin@xevyte.com>',
+    to: email,
+    subject: 'Welcome to XevyTalk - Your Account Credentials',
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+          .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+          .credentials { background: white; padding: 20px; border-left: 4px solid #0891b2; margin: 20px 0; }
+          .button { display: inline-block; background: #0891b2; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+          .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>💬 Welcome to XevyTalk!</h1>
+          </div>
+          <div class="content">
+            <h2>Hello ${username},</h2>
+            <p>Your account has been created successfully. You can now login to XevyTalk to chat with your teammates!</p>
+            
+            <div class="credentials">
+              <h3>Your Login Credentials:</h3>
+              <p><strong>Email:</strong> ${email}</p>
+              <p><strong>Password:</strong> ${password}</p>
+            </div>
+            
+            <p><strong>Important:</strong> Please change your password after your first login for security purposes.</p>
+            
+            <a href="http://localhost:5173/login" class="button">Login to XevyTalk</a>
+            
+            <div class="footer">
+              <p>This is an automated email. Please do not reply.</p>
+              <p>&copy; 2025 XevyTalk. All rights reserved.</p>
+            </div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `
+  };
+
+  try {
+    await emailTransporter.sendMail(mailOptions);
+    console.log(`✓ Welcome email sent to ${email}`);
+    return true;
+  } catch (error) {
+    console.error('Error sending email:', error);
+    return false;
+  }
+};
+
 // Models
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true }, // Display name
@@ -135,7 +205,8 @@ const userSchema = new mongoose.Schema({
   lastSeenAt: { type: Date, default: Date.now },
   passwordHash: { type: String },
   phone: { type: String },
-  address: { type: String }
+  address: { type: String },
+  isAdmin: { type: Boolean, default: false }
 }, { timestamps: true });
 
 const conversationSchema = new mongoose.Schema({
@@ -241,7 +312,8 @@ app.post('/api/auth/register', async (req, res) => {
     username: name,
     email,
     passwordHash,
-    avatar: `https://api.dicebear.com/8.x/pixel-art/svg?seed=${encodeURIComponent(name)}`
+    avatar: `https://api.dicebear.com/8.x/pixel-art/svg?seed=${encodeURIComponent(name)}`,
+    isAdmin: email === 'admin@xevyte.com'
   });
   await u.save();
   res.json({ token: signToken(u), user: u });
@@ -317,6 +389,65 @@ app.put('/api/users/me', auth, async (req, res) => {
   } catch (error) {
     console.error('Error updating user:', error)
     res.status(400).json({ error: error.message || 'Failed to update profile' })
+  }
+});
+
+// Admin-only: Create user
+app.post('/api/admin/create-user', auth, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ error: 'Unauthorized. Admin access required.' });
+    }
+
+    const { username, email } = req.body;
+
+    // Validate required fields
+    if (!username || !email) {
+      return res.status(400).json({ error: 'Username and email are required' });
+    }
+
+    // Validate email domain
+    if (!email.endsWith('@xevyte.com')) {
+      return res.status(400).json({ error: 'Email must be from @xevyte.com domain' });
+    }
+
+    // Check if email already exists
+    const exists = await User.findOne({ email });
+    if (exists) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+
+    // Generate a random secure password
+    const randomPassword = crypto.randomBytes(8).toString('hex'); // 16 character hex string
+    const passwordHash = await bcrypt.hash(randomPassword, 10);
+
+    const newUser = new User({
+      username,
+      email,
+      passwordHash,
+      avatar: `https://api.dicebear.com/8.x/pixel-art/svg?seed=${encodeURIComponent(username)}`,
+      isAdmin: false
+    });
+
+    await newUser.save();
+
+    // Send welcome email with credentials
+    const emailSent = await sendWelcomeEmail(email, username, randomPassword);
+
+    // Return user without password
+    const { passwordHash: _, ...userWithoutPassword } = newUser.toObject();
+    res.json({
+      user: userWithoutPassword,
+      password: randomPassword,
+      emailSent,
+      message: emailSent
+        ? `User created successfully. Credentials sent to ${email}`
+        : 'User created but email failed to send. Please share credentials manually.'
+    });
+  } catch (error) {
+    console.error('Error creating user:', error);
+    res.status(500).json({ error: error.message || 'Failed to create user' });
   }
 });
 
@@ -864,10 +995,48 @@ io.on('connection', (socket) => {
   });
 });
 
+// Seed admin user if it doesn't exist
+const seedAdminUser = async () => {
+  console.log('Seeding admin user...');
+  try {
+    const adminEmail = 'admin@xevyte.com';
+    const existingAdmin = await User.findOne({ email: adminEmail });
+
+    if (!existingAdmin) {
+      console.log('Admin user not found, creating...');
+      const passwordHash = await bcrypt.hash('admin123', 10);
+      const admin = new User({
+        username: 'Admin',
+        email: adminEmail,
+        passwordHash,
+        avatar: `https://api.dicebear.com/8.x/pixel-art/svg?seed=Admin`,
+        isAdmin: true
+      });
+      await admin.save();
+      console.log('✓ Admin user created (admin@xevyte.com / admin123)');
+    } else {
+      console.log('Admin user already exists');
+      // Ensure existing admin has isAdmin flag
+      if (!existingAdmin.isAdmin) {
+        existingAdmin.isAdmin = true;
+        await existingAdmin.save();
+        console.log('✓ Admin flag updated for admin@xevyte.com');
+      } else {
+        console.log('✓ Admin user ready (admin@xevyte.com / admin123)');
+      }
+    }
+  } catch (error) {
+    console.error('Error seeding admin user:', error);
+  }
+};
+
 const startServer = async () => {
   try {
     await mongoose.connect(MONGO_URI);
     console.log('Connected to MongoDB');
+
+    // Seed admin user
+    await seedAdminUser();
   } catch (err) {
     console.error('Failed to connect to primary MongoDB:', err.message);
     // Fallback to local if primary fails and it wasn't already local
@@ -876,6 +1045,9 @@ const startServer = async () => {
       try {
         await mongoose.connect('mongodb://127.0.0.1:27017/chatbot');
         console.log('Connected to local MongoDB fallback');
+
+        // Seed admin user on fallback connection too
+        await seedAdminUser();
       } catch (localErr) {
         console.error('Failed to connect to local MongoDB:', localErr.message);
         process.exit(1);
