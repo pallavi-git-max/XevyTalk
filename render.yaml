@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: xevytalk
+    env: node
+    buildCommand: npm install && cd client && npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: MONGODB_URI
+        fromDatabase:
+          name: xevytalk-db
+          property: connectionString
+    plan: free
+
+databases:
+  - name: xevytalk-db
+    databaseName: xevytalk
+    user: xevytalk_user
+    plan: free
