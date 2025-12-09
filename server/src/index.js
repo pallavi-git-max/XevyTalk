@@ -13,6 +13,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
+import { GridFSBucket } from 'mongodb';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,14 +26,20 @@ const app = express();
 const allowedOrigins = [
   'https://xevytalk-client.onrender.com',
   'http://localhost:5173',
+  'http://localhost:5174',
   'http://localhost:3000',
-  'http://127.0.0.1:5173'
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174'
 ];
 
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
+    // Allow localhost on any port for development
+    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      return callback(null, true);
+    }
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
@@ -50,37 +57,47 @@ app.options('*', cors());
 
 app.use(express.json());
 
-// Ensure uploads directory exists
-const uploadDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+// File upload limits and allowed types
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
+const ALLOWED_FILE_TYPES = [
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+  'application/pdf',
+  'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'video/mp4', 'video/quicktime', 'video/x-msvideo',
+  'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg',
+  'text/plain', 'text/csv'
+];
 
-// Serve uploaded files with proper headers
-app.use('/uploads', express.static(uploadDir, {
-  setHeaders: (res, path) => {
-    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
-    res.set('Access-Control-Allow-Origin', '*');
-  }
-}));
-
-// Configure Multer
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
+// Configure Multer to use memory storage (files will be stored in MongoDB GridFS)
+const upload = multer({ 
+  storage: multer.memoryStorage(), 
+  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_FILE_TYPES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`File type ${file.mimetype} not allowed. Allowed types: ${ALLOWED_FILE_TYPES.join(', ')}`), false);
+    }
   }
 });
 
-const upload = multer({ storage: storage });
+// GridFS bucket will be initialized after MongoDB connection
+let gridFSBucket = null;
 
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      // Allow all localhost origins for development
+      if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+        return callback(null, true);
+      }
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      callback(null, true);
+    },
     methods: ['GET', 'POST'],
     credentials: true
   },
@@ -132,8 +149,8 @@ const decryptText = (packed = '') => {
 const emailTransporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'admin@xevyte.com',
-    pass: 'figjfdnpaaygcfrj' // App password
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
   }
 });
 
@@ -147,38 +164,65 @@ const sendWelcomeEmail = async (email, username, password) => {
       <!DOCTYPE html>
       <html>
       <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Welcome to XevyTalk</title>
         <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-          .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-          .credentials { background: white; padding: 20px; border-left: 4px solid #0891b2; margin: 20px 0; }
-          .button { display: inline-block; background: #0891b2; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin-top: 20px; }
-          .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; background-color: #f4f4f5; margin: 0; padding: 0; }
+          .wrapper { width: 100%; background-color: #f4f4f5; padding: 40px 0; }
+          .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+          .header { background-color: #ffffff; padding: 40px 40px 20px; text-align: center; }
+          .logo { font-size: 32px; font-weight: 800; color: #0891b2; text-decoration: none; display: inline-block; }
+          .content { padding: 20px 40px 40px; }
+          .greeting { font-size: 24px; font-weight: 700; color: #18181b; margin-bottom: 16px; }
+          .text { color: #52525b; font-size: 16px; margin-bottom: 24px; }
+          .credentials-box { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+          .credential-row { margin-bottom: 12px; }
+          .credential-row:last-child { margin-bottom: 0; }
+          .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: 600; margin-bottom: 4px; }
+          .value { font-family: 'Monaco', 'Consolas', monospace; font-size: 16px; color: #0f172a; font-weight: 500; background: #fff; padding: 8px 12px; border-radius: 6px; border: 1px solid #e2e8f0; display: inline-block; }
+          .button-container { text-align: center; margin-top: 32px; margin-bottom: 32px; }
+          .button { background-color: #0891b2; color: #ffffff; padding: 14px 32px; text-decoration: none; border-radius: 50px; font-weight: 600; font-size: 16px; display: inline-block; transition: background-color 0.2s; }
+          .button:hover { background-color: #0e7490; }
+          .alert { background-color: #fff7ed; border-left: 4px solid #f97316; padding: 16px; border-radius: 4px; margin-bottom: 24px; }
+          .alert-text { color: #9a3412; font-size: 14px; margin: 0; }
+          .footer { background-color: #f8fafc; padding: 24px; text-align: center; border-top: 1px solid #e2e8f0; }
+          .footer-text { color: #94a3b8; font-size: 12px; margin: 0; }
         </style>
       </head>
       <body>
-        <div class="container">
-          <div class="header">
-            <h1>💬 Welcome to XevyTalk!</h1>
-          </div>
-          <div class="content">
-            <h2>Hello ${username},</h2>
-            <p>Your account has been created successfully. You can now login to XevyTalk to chat with your teammates!</p>
-            
-            <div class="credentials">
-              <h3>Your Login Credentials:</h3>
-              <p><strong>Email:</strong> ${email}</p>
-              <p><strong>Password:</strong> ${password}</p>
+        <div class="wrapper">
+          <div class="container">
+            <div class="header">
+              <div class="logo">💬 XevyTalk</div>
             </div>
-            
-            <p><strong>Important:</strong> Please change your password after your first login for security purposes.</p>
-            
-            <a href="http://localhost:5173/login" class="button">Login to XevyTalk</a>
-            
+            <div class="content">
+              <h1 class="greeting">Hello, ${username}!</h1>
+              <p class="text">Welcome to the team. Your account has been created successfully. Here are your temporary login credentials:</p>
+              
+              <div class="credentials-box">
+                <div class="credential-row">
+                  <div class="label">Email Address</div>
+                  <div class="value">${email}</div>
+                </div>
+                <div class="credential-row">
+                  <div class="label">Temporary Password</div>
+                  <div class="value">${password}</div>
+                </div>
+              </div>
+
+              <div class="alert">
+                <p class="alert-text"><strong>Security Notice:</strong> You will be required to change this password immediately upon your first login.</p>
+              </div>
+
+              <div class="button-container">
+                <a href="http://localhost:5173/login" class="button">Login to Account</a>
+              </div>
+              
+              <p class="text" style="font-size: 14px; color: #71717a; text-align: center;">If the button doesn't work, copy this link:<br><a href="http://localhost:5173/login" style="color: #0891b2;">http://localhost:5173/login</a></p>
+            </div>
             <div class="footer">
-              <p>This is an automated email. Please do not reply.</p>
-              <p>&copy; 2025 XevyTalk. All rights reserved.</p>
+              <p class="footer-text">&copy; ${new Date().getFullYear()} XevyTalk. All rights reserved.</p>
             </div>
           </div>
         </div>
@@ -206,7 +250,9 @@ const userSchema = new mongoose.Schema({
   passwordHash: { type: String },
   phone: { type: String },
   address: { type: String },
-  isAdmin: { type: Boolean, default: false }
+  isAdmin: { type: Boolean, default: false },
+  createdByAdmin: { type: Boolean, default: false }, // Track if user was created by admin
+  mustChangePassword: { type: Boolean, default: false } // Force password change on first login
 }, { timestamps: true });
 
 const conversationSchema = new mongoose.Schema({
@@ -216,6 +262,16 @@ const conversationSchema = new mongoose.Schema({
   lastMessageAt: { type: Date, default: Date.now },
   hiddenFor: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
+
+// Attachment subdocument schema
+const attachmentSchema = new mongoose.Schema({
+  fileId: { type: String, required: true },
+  fileURL: { type: String, required: true },
+  name: { type: String, required: true },
+  type: { type: String, required: true },
+  size: { type: Number, required: true },
+  thumbnailURL: { type: String, default: null }
+}, { _id: false });
 
 const messageSchema = new mongoose.Schema({
   conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true },
@@ -227,26 +283,50 @@ const messageSchema = new mongoose.Schema({
   deliveredTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   seenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   tempId: { type: String },
-  attachments: [{
-    url: String,
-    name: String,
-    type: String,
-    size: Number
-  }],
+  attachments: [attachmentSchema],
+  editedAt: { type: Date },
+}, { timestamps: true });
+
+// Upload session schema for temporary upload tracking
+const uploadSessionSchema = new mongoose.Schema({
+  sessionId: { type: String, required: true, unique: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  fileName: { type: String },
+  fileType: { type: String },
+  fileSize: { type: Number },
+  expiresAt: { type: Date, default: () => new Date(Date.now() + 3600000) }, // 1 hour expiry
+  uploaded: { type: Boolean, default: false },
+  fileId: { type: String }, // Set after upload completes
+  fileURL: { type: String }
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
 const Conversation = mongoose.model('Conversation', conversationSchema);
 const Message = mongoose.model('Message', messageSchema);
+const UploadSession = mongoose.model('UploadSession', uploadSessionSchema);
 
 // Normalize message shape for API / socket responses.
 // If encrypted content exists, decrypt it into .content field.
-const toSafeMessage = (m) => {
+const toSafeMessage = (m, req = null) => {
   if (!m) return m;
   const obj = m.toObject ? m.toObject() : { ...m };
   if (obj.contentEnc) {
     const decrypted = decryptText(obj.contentEnc);
     if (decrypted) obj.content = decrypted;
+  }
+  // Add URLs to attachments if they exist
+  if (obj.attachments && obj.attachments.length > 0) {
+    const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
+    const host = req ? (req.get('host') || `localhost:${PORT}`) : `localhost:${PORT}`;
+    obj.attachments = obj.attachments.map(att => ({
+      fileId: att.fileId,
+      fileURL: att.fileURL || att.url || `${protocol}://${host}/api/files/${att.fileId}`,
+      url: att.fileURL || att.url || `${protocol}://${host}/api/files/${att.fileId}`, // For backward compatibility
+      name: att.name,
+      type: att.type,
+      size: att.size,
+      thumbnailURL: att.thumbnailURL || null
+    }));
   }
   return obj;
 };
@@ -296,9 +376,13 @@ app.post('/api/auth/register', async (req, res) => {
     return res.status(400).json({ error: 'Name, email and password are required' });
   }
 
-  // Validate email domain
-  if (!email.endsWith('@xevyte.com')) {
-    return res.status(400).json({ error: 'Email must be from @xevyte.com domain' });
+  // Only allow admin@xevyte.com to register
+  const normalizedEmail = email.toLowerCase().trim();
+  console.log(`Registration attempt for: '${email}' (normalized: '${normalizedEmail}')`);
+
+  if (normalizedEmail !== 'admin@xevyte.com') {
+    console.log(`Registration blocked for: '${email}'`);
+    return res.status(403).json({ error: 'Registration is disabled. Please contact admin for account creation.' });
   }
 
   // Check if email already exists
@@ -313,10 +397,21 @@ app.post('/api/auth/register', async (req, res) => {
     email,
     passwordHash,
     avatar: `https://api.dicebear.com/8.x/pixel-art/svg?seed=${encodeURIComponent(name)}`,
-    isAdmin: email === 'admin@xevyte.com'
+    isAdmin: true,
+    createdByAdmin: false // Admin creates themselves
   });
   await u.save();
   res.json({ token: signToken(u), user: u });
+});
+
+app.get('/api/auth/me', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('-passwordHash');
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -331,30 +426,355 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
+  // Check if user was created by admin or is admin
+  if (!u.createdByAdmin && !u.isAdmin) {
+    return res.status(401).json({ error: 'Invalid credentials. Please contact admin for account creation.' });
+  }
+
   const ok = await bcrypt.compare(password, u.passwordHash);
   if (!ok) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
+  // Set isAdmin flag if email is admin@xevyte.com
+  if (email === 'admin@xevyte.com' && !u.isAdmin) {
+    u.isAdmin = true;
+    await u.save();
+    console.log(`✓ Admin flag set for ${email}`);
+  }
+
   res.json({ token: signToken(u), user: u });
 });
 
-app.post('/api/upload', auth, upload.single('file'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
+app.post('/api/auth/change-password', auth, async (req, res) => {
+  const { newPassword } = req.body;
+
+  if (!newPassword || newPassword.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters long' });
   }
 
-  // Always use HTTPS for production URLs
-  const protocol = process.env.NODE_ENV === 'production' ? 'https' : req.protocol;
-  const host = req.get('host');
-  const fileUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
 
-  res.json({
-    url: fileUrl,
-    name: req.file.originalname,
-    type: req.file.mimetype,
-    size: req.file.size
-  });
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    user.passwordHash = passwordHash;
+    user.mustChangePassword = false;
+    await user.save();
+
+    res.json({ message: 'Password updated successfully', user });
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({ error: 'Failed to update password' });
+  }
+});
+
+// ============================================================================
+// WHATSAPP-LIKE FILE UPLOAD SYSTEM
+// ============================================================================
+
+// Step 1: Create upload session - returns uploadURL and fileId
+app.post('/api/media/create-upload-session', auth, async (req, res) => {
+  try {
+    const { fileName, fileType, fileSize } = req.body;
+
+    if (!fileName || !fileType || !fileSize) {
+      return res.status(400).json({ error: 'fileName, fileType, and fileSize are required' });
+    }
+
+    // Validate file size
+    if (fileSize > MAX_FILE_SIZE) {
+      return res.status(400).json({ error: `File size exceeds maximum limit of ${MAX_FILE_SIZE / 1024 / 1024}MB` });
+    }
+
+    // Validate file type
+    if (!ALLOWED_FILE_TYPES.includes(fileType)) {
+      return res.status(400).json({ error: `File type ${fileType} not allowed` });
+    }
+
+    // Generate unique session ID
+    const sessionId = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+
+    // Create upload session
+    const session = new UploadSession({
+      sessionId,
+      userId: req.user._id,
+      fileName,
+      fileType,
+      fileSize
+    });
+    await session.save();
+
+    // Generate upload URL and final file URL
+    const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
+    const host = req.get('host') || `localhost:${PORT}`;
+    const uploadURL = `${protocol}://${host}/api/media/upload/${sessionId}`;
+    const finalFileURL = `${protocol}://${host}/api/files/${sessionId}`; // Will be updated after upload
+
+    res.json({
+      sessionId,
+      uploadURL,
+      finalFileURL, // Placeholder, will be actual file URL after upload
+      fileId: sessionId, // Temporary, will be GridFS ID after upload
+      expiresAt: session.expiresAt
+    });
+  } catch (error) {
+    console.error('Error creating upload session:', error);
+    res.status(500).json({ error: 'Failed to create upload session' });
+  }
+});
+
+// Step 2: Direct file upload endpoint (frontend uploads here)
+app.post('/api/media/upload/:sessionId', auth, upload.single('file'), async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    if (!gridFSBucket) {
+      return res.status(500).json({ error: 'File storage not initialized' });
+    }
+
+    // Find and validate session
+    const session = await UploadSession.findOne({ sessionId, userId: req.user._id });
+    if (!session) {
+      return res.status(404).json({ error: 'Upload session not found or expired' });
+    }
+
+    if (session.uploaded) {
+      return res.status(400).json({ error: 'File already uploaded for this session' });
+    }
+
+    if (new Date() > session.expiresAt) {
+      return res.status(400).json({ error: 'Upload session expired' });
+    }
+
+    // Validate file matches session
+    if (req.file.size !== session.fileSize || req.file.mimetype !== session.fileType) {
+      return res.status(400).json({ error: 'File does not match session parameters' });
+    }
+
+    // Upload to GridFS
+    const filename = `${Date.now()}-${Math.round(Math.random() * 1E9)}-${session.fileName}`;
+    const uploadStream = gridFSBucket.openUploadStream(filename, {
+      contentType: session.fileType,
+      metadata: {
+        originalName: session.fileName,
+        mimeType: session.fileType,
+        uploadedBy: String(req.user._id),
+        uploadedAt: new Date(),
+        sessionId: sessionId
+      }
+    });
+
+    return new Promise((resolve, reject) => {
+      uploadStream.on('finish', async () => {
+        try {
+          const fileId = uploadStream.id.toString();
+          const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
+          const host = req.get('host') || `localhost:${PORT}`;
+          const fileURL = `${protocol}://${host}/api/files/${fileId}`;
+
+          // Update session with file info
+          session.uploaded = true;
+          session.fileId = fileId;
+          session.fileURL = fileURL;
+          await session.save();
+
+          res.json({
+            success: true,
+            fileId,
+            fileURL,
+            fileName: session.fileName,
+            fileType: session.fileType,
+            fileSize: session.fileSize
+          });
+          resolve();
+        } catch (error) {
+          console.error('Error saving session:', error);
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to complete upload' });
+          }
+          reject(error);
+        }
+      });
+
+      uploadStream.on('error', (error) => {
+        console.error('GridFS upload error:', error);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to upload file' });
+        }
+        reject(error);
+      });
+
+      uploadStream.end(req.file.buffer);
+    });
+  } catch (error) {
+    console.error('Upload error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to upload file' });
+    }
+  }
+});
+
+// Step 3: Send message with file metadata (no file content)
+app.post('/api/messages/send', auth, async (req, res) => {
+  try {
+    const { conversationId, messageText, fileId, fileURL, fileName, fileType, fileSize, thumbnailURL } = req.body;
+
+    if (!conversationId) {
+      return res.status(400).json({ error: 'conversationId is required' });
+    }
+
+    // Verify conversation exists and user is a member
+    const conv = await Conversation.findById(conversationId);
+    if (!conv) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    if (!conv.members.some(m => String(m) === String(req.user._id))) {
+      return res.status(403).json({ error: 'Not a member of this conversation' });
+    }
+
+    // If file is included, verify it was uploaded via session
+    let attachments = [];
+    if (fileId && fileURL) {
+      const session = await UploadSession.findOne({ 
+        fileId, 
+        userId: req.user._id, 
+        uploaded: true 
+      });
+
+      if (!session) {
+        return res.status(400).json({ error: 'File not found or not uploaded' });
+      }
+
+      // Create attachment object with explicit types
+      attachments = [{
+        fileId: String(fileId),
+        fileURL: String(fileURL || session.fileURL),
+        name: String(fileName || session.fileName),
+        type: String(fileType || session.fileType),
+        size: Number(fileSize || session.fileSize),
+        thumbnailURL: thumbnailURL ? String(thumbnailURL) : null
+      }];
+    }
+
+    // Create message
+    const content = messageText || '';
+    const encContent = content ? encryptText(content) : '';
+    const tempId = Math.random().toString(36).slice(2);
+
+    // Ensure attachments is properly formatted
+    const attachmentsArray = attachments && attachments.length > 0 ? attachments : [];
+    
+    // Validate and clean attachments
+    const cleanAttachments = attachmentsArray.map(att => {
+      // Handle if attachment is stringified
+      if (typeof att === 'string') {
+        try {
+          att = JSON.parse(att);
+        } catch (e) {
+          console.error('Failed to parse attachment:', att);
+          return null;
+        }
+      }
+      
+      return {
+        fileId: String(att.fileId || ''),
+        fileURL: String(att.fileURL || att.url || ''),
+        name: String(att.name || 'file'),
+        type: String(att.type || 'application/octet-stream'),
+        size: Number(att.size || 0),
+        thumbnailURL: att.thumbnailURL ? String(att.thumbnailURL) : null
+      };
+    }).filter(att => att && att.fileId); // Remove invalid attachments
+    
+    const msg = new Message({
+      conversation: conversationId,
+      sender: req.user._id,
+      contentEnc: encContent,
+      content: content,
+      tempId,
+      attachments: cleanAttachments
+    });
+
+    try {
+      await msg.save();
+    } catch (saveError) {
+      console.error('Message save error:', saveError);
+      console.error('Attachments data:', JSON.stringify(cleanAttachments, null, 2));
+      throw saveError;
+    }
+
+    // Update conversation
+    await Conversation.findByIdAndUpdate(conversationId, {
+      lastMessageAt: new Date(),
+      hiddenFor: []
+    });
+
+    // Populate and send response
+    const populated = await Message.findById(msg._id).populate('sender');
+    const safe = toSafeMessage(populated, req);
+
+    // Broadcast via Socket.IO (metadata only, no file content)
+    io.to(`conv:${conversationId}`).emit('message_new', safe);
+
+    res.json(safe);
+  } catch (error) {
+    console.error('Error sending message:', error);
+    res.status(500).json({ error: error.message || 'Failed to send message' });
+  }
+});
+
+// Download file from MongoDB GridFS
+app.get('/api/files/:fileId', async (req, res) => {
+  if (!gridFSBucket) {
+    return res.status(500).json({ error: 'File storage not initialized' });
+  }
+
+  try {
+    const fileId = req.params.fileId;
+    let objectId;
+    
+    // Convert string ID to ObjectId
+    try {
+      objectId = new mongoose.Types.ObjectId(fileId);
+    } catch (error) {
+      return res.status(400).json({ error: 'Invalid file ID' });
+    }
+    
+    // Check if file exists
+    const files = await gridFSBucket.find({ _id: objectId }).toArray();
+    if (files.length === 0) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    const file = files[0];
+    const downloadStream = gridFSBucket.openDownloadStream(objectId);
+
+    // Set appropriate headers
+    res.set('Content-Type', file.metadata?.mimeType || 'application/octet-stream');
+    res.set('Content-Disposition', `inline; filename="${encodeURIComponent(file.metadata?.originalName || file.filename)}"`);
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+
+    downloadStream.pipe(res);
+
+    downloadStream.on('error', (error) => {
+      console.error('GridFS download error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to download file' });
+      }
+    });
+  } catch (error) {
+    console.error('Download error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to download file' });
+    }
+  }
 });
 
 app.get('/api/auth/me', auth, (req, res) => {
@@ -407,19 +827,14 @@ app.post('/api/admin/create-user', auth, async (req, res) => {
       return res.status(400).json({ error: 'Username and email are required' });
     }
 
-    // Validate email domain
-    if (!email.endsWith('@xevyte.com')) {
-      return res.status(400).json({ error: 'Email must be from @xevyte.com domain' });
-    }
-
     // Check if email already exists
     const exists = await User.findOne({ email });
     if (exists) {
       return res.status(409).json({ error: 'Email already registered' });
     }
 
-    // Generate a random secure password
-    const randomPassword = crypto.randomBytes(8).toString('hex'); // 16 character hex string
+    // Generate a random 8-character password
+    const randomPassword = crypto.randomBytes(4).toString('hex'); // 8 character hex string
     const passwordHash = await bcrypt.hash(randomPassword, 10);
 
     const newUser = new User({
@@ -427,7 +842,9 @@ app.post('/api/admin/create-user', auth, async (req, res) => {
       email,
       passwordHash,
       avatar: `https://api.dicebear.com/8.x/pixel-art/svg?seed=${encodeURIComponent(username)}`,
-      isAdmin: false
+      isAdmin: false,
+      createdByAdmin: true, // Mark as created by admin
+      mustChangePassword: true // Force password change
     });
 
     await newUser.save();
@@ -448,6 +865,26 @@ app.post('/api/admin/create-user', auth, async (req, res) => {
   } catch (error) {
     console.error('Error creating user:', error);
     res.status(500).json({ error: error.message || 'Failed to create user' });
+  }
+});
+
+// Admin-only: Get all users created by admin
+app.get('/api/admin/users', auth, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ error: 'Unauthorized. Admin access required.' });
+    }
+
+    // Get all users created by admin, sorted alphabetically by username
+    const users = await User.find({ createdByAdmin: true })
+      .select('-passwordHash') // Exclude password hash
+      .sort({ username: 1 }); // Sort alphabetically
+
+    res.json(users);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch users' });
   }
 });
 
@@ -544,15 +981,19 @@ app.post('/api/conversations/group', auth, async (req, res) => {
 });
 
 app.get('/api/messages/:conversationId', auth, async (req, res) => {
-  const { conversationId } = req.params;
-  const m = await Message.find({ conversation: conversationId })
-    .sort({ createdAt: 1 })
-    .populate('sender');
-  // Decrypt content if needed before sending to client
-  const safe = m.map(toSafeMessage);
-  // Filter out messages with no content and no attachments
-  const filtered = safe.filter(msg => msg.content || (msg.attachments && msg.attachments.length > 0));
-  res.json(filtered);
+  try {
+    const { conversationId } = req.params;
+    const messages = await Message.find({ conversation: conversationId })
+      .sort({ createdAt: 1 })
+      .populate('sender');
+    // Decrypt content and add attachment URLs
+    const safeMessages = messages.map(m => toSafeMessage(m, req));
+    // Filter out messages with no content and no attachments
+    const filtered = safeMessages.filter(msg => msg.content || (msg.attachments && msg.attachments.length > 0));
+    res.json(filtered);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.delete('/api/conversations/:id', auth, async (req, res) => {
@@ -735,6 +1176,42 @@ app.post('/api/conversations/:id/remove-member', auth, async (req, res) => {
   }
 });
 
+// Edit a message (sender only)
+app.put('/api/messages/:id', auth, async (req, res) => {
+  try {
+    const { content } = req.body || {};
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ error: 'content required' });
+    }
+
+    const msg = await Message.findById(req.params.id);
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+    // Only sender can edit
+    if (String(msg.sender) !== String(req.user._id)) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    const encContent = encryptText(content);
+    msg.contentEnc = encContent;
+    msg.content = content;
+    msg.editedAt = new Date();
+    await msg.save();
+
+    const safe = toSafeMessage(msg, req);
+
+    io.to(`conv:${msg.conversation}`).emit('message_update', {
+      messageId: String(msg._id),
+      content: safe.content,
+      editedAt: msg.editedAt
+    });
+
+    res.json(safe);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.delete('/api/messages/:id', auth, async (req, res) => {
   try {
     const msg = await Message.findById(req.params.id);
@@ -804,16 +1281,33 @@ io.on('connection', (socket) => {
     socket.to(`conv:${conversationId}`).emit('stop_typing', { userId: String(user._id), conversationId });
   });
 
+  // Socket.IO message_send - ONLY for text messages or already-uploaded file metadata
+  // File uploads MUST use REST API /api/messages/send after uploading via /api/media/upload/:sessionId
   socket.on('message_send', async ({ conversationId, content, tempId, attachments }) => {
+    // Only allow text-only messages via WebSocket
+    // File attachments must be sent via REST API after upload
     if (!content && (!attachments || attachments.length === 0)) return;
 
     const encContent = content ? encryptText(content) : '';
 
-    // Parse attachments if it's a string (Socket.IO sometimes stringifies)
-    let parsedAttachments = attachments;
-    if (typeof attachments === 'string') {
+    // For WebSocket, only accept metadata-only attachments (already uploaded files)
+    // Attachments should only contain fileId, fileURL, name, type, size - NO file content
+    let parsedAttachments = [];
+    if (attachments) {
       try {
-        parsedAttachments = JSON.parse(attachments);
+        parsedAttachments = typeof attachments === 'string' ? JSON.parse(attachments) : attachments;
+        
+        // Validate that attachments only contain metadata, not file content
+        parsedAttachments = parsedAttachments
+          .filter(att => att.fileId && att.fileURL) // Must have fileId and fileURL (already uploaded)
+          .map(att => ({
+            fileId: att.fileId,
+            fileURL: att.fileURL,
+            name: att.name || 'file',
+            type: att.type || 'application/octet-stream',
+            size: att.size || 0,
+            thumbnailURL: att.thumbnailURL || null
+          }));
       } catch (e) {
         console.error('Failed to parse attachments:', e);
         parsedAttachments = [];
@@ -824,18 +1318,29 @@ io.on('connection', (socket) => {
       conversation: conversationId,
       sender: user._id,
       contentEnc: encContent,
+      content: content || '',
       tempId,
-      attachments: parsedAttachments || []
+      attachments: parsedAttachments
     });
     await msg.save();
 
     await Conversation.findByIdAndUpdate(conversationId, {
       lastMessageAt: new Date(),
-      hiddenFor: [] // Unhide for everyone
+      hiddenFor: []
     });
 
     const populated = await Message.findById(msg._id).populate('sender');
+    
+    // Generate URLs for attachments (metadata only)
+    const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
     const safe = toSafeMessage(populated);
+    if (safe.attachments && safe.attachments.length > 0) {
+      safe.attachments = safe.attachments.map(att => ({
+        ...att,
+        url: att.fileURL || att.url || `${protocol}://localhost:${PORT}/api/files/${att.fileId}`
+      }));
+    }
+    
     io.to(`conv:${conversationId}`).emit('message_new', safe);
   });
 
@@ -995,69 +1500,81 @@ io.on('connection', (socket) => {
   });
 });
 
-// Seed admin user if it doesn't exist
-const seedAdminUser = async () => {
-  console.log('Seeding admin user...');
-  try {
-    const adminEmail = 'admin@xevyte.com';
-    const existingAdmin = await User.findOne({ email: adminEmail });
-
-    if (!existingAdmin) {
-      console.log('Admin user not found, creating...');
-      const passwordHash = await bcrypt.hash('admin123', 10);
-      const admin = new User({
-        username: 'Admin',
-        email: adminEmail,
-        passwordHash,
-        avatar: `https://api.dicebear.com/8.x/pixel-art/svg?seed=Admin`,
-        isAdmin: true
-      });
-      await admin.save();
-      console.log('✓ Admin user created (admin@xevyte.com / admin123)');
-    } else {
-      console.log('Admin user already exists');
-      // Ensure existing admin has isAdmin flag
-      if (!existingAdmin.isAdmin) {
-        existingAdmin.isAdmin = true;
-        await existingAdmin.save();
-        console.log('✓ Admin flag updated for admin@xevyte.com');
-      } else {
-        console.log('✓ Admin user ready (admin@xevyte.com / admin123)');
-      }
-    }
-  } catch (error) {
-    console.error('Error seeding admin user:', error);
-  }
-};
 
 const startServer = async () => {
   try {
-    await mongoose.connect(MONGO_URI);
-    console.log('Connected to MongoDB');
+    // Add connection options for better reliability
+    const connectionOptions = {
+      serverSelectionTimeoutMS: 10000, // Timeout after 10s instead of 30s
+      socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
+      retryWrites: true,
+      w: 'majority'
+    };
 
-    // Seed admin user
-    await seedAdminUser();
+    console.log('Connecting to MongoDB...');
+    await mongoose.connect(MONGO_URI, connectionOptions);
+    console.log('Connected to MongoDB successfully');
+    
+    // Initialize GridFS bucket for file storage
+    const db = mongoose.connection.db;
+    gridFSBucket = new GridFSBucket(db, { bucketName: 'files' });
+    console.log('GridFS bucket initialized for file storage');
   } catch (err) {
-    console.error('Failed to connect to primary MongoDB:', err.message);
-    // Fallback to local if primary fails and it wasn't already local
-    if (MONGO_URI.includes('mongodb.net')) {
-      console.log('Attempting fallback to local MongoDB...');
+    console.error('Failed to connect to MongoDB:', err.message);
+    console.error('Error details:', err);
+    
+    // Check if it's a DNS/network error
+    if (err.message.includes('ESERVFAIL') || err.message.includes('queryTxt') || err.message.includes('ENOTFOUND')) {
+      console.error('\n⚠️  DNS Resolution Error - Cannot find MongoDB Atlas cluster:');
+      console.error('   - Cluster URL:', MONGO_URI.replace(/:[^:@]+@/, ':****@'));
+      console.error('\n   Possible issues:');
+      console.error('   1. Cluster might be paused or deleted in MongoDB Atlas');
+      console.error('   2. Cluster name/URL might be incorrect');
+      console.error('   3. Network/DNS connectivity issue');
+      console.error('\n   Solutions:');
+      console.error('   → Go to MongoDB Atlas dashboard (https://cloud.mongodb.com)');
+      console.error('   → Check if cluster is running (not paused)');
+      console.error('   → Copy the correct connection string from Atlas');
+      console.error('   → Verify Network Access allows your IP address');
+      console.error('\n   Trying fallback to local MongoDB...');
+      
+      // Try local MongoDB as fallback
       try {
-        await mongoose.connect('mongodb://127.0.0.1:27017/chatbot');
-        console.log('Connected to local MongoDB fallback');
-
-        // Seed admin user on fallback connection too
-        await seedAdminUser();
+        const localURI = 'mongodb://127.0.0.1:27017/chatbot';
+        console.log('Connecting to local MongoDB:', localURI);
+        await mongoose.connect(localURI, { serverSelectionTimeoutMS: 5000 });
+        console.log('✓ Connected to local MongoDB (fallback)');
+        
+        const db = mongoose.connection.db;
+        gridFSBucket = new GridFSBucket(db, { bucketName: 'files' });
+        console.log('GridFS bucket initialized for file storage');
+        return; // Exit early, local connection successful
       } catch (localErr) {
-        console.error('Failed to connect to local MongoDB:', localErr.message);
-        process.exit(1);
+        console.error('\n✗ Local MongoDB fallback also failed:', localErr.message);
+        console.error('\n   Please fix MongoDB Atlas connection or start local MongoDB');
       }
-    } else {
-      process.exit(1);
+    } else if (err.message.includes('authentication')) {
+      console.error('\n⚠️  Authentication Error:');
+      console.error('   - Check MongoDB username and password in .env file');
+      console.error('   - Verify database user has correct permissions in Atlas');
     }
+    
+    process.exit(1);
   }
 
-  server.listen(PORT, () => console.log(`API http://localhost:${PORT}`));
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`API http://localhost:${PORT}`);
+    console.log(`Server listening on all interfaces (0.0.0.0:${PORT})`);
+  });
+  
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use. Please stop the other process or use a different port.`);
+      process.exit(1);
+    } else {
+      console.error('Server error:', err);
+    }
+  });
 };
 
 startServer();

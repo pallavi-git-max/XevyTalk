@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useMemo } from 'react'
 import EmojiPicker from 'emoji-picker-react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
@@ -99,7 +99,7 @@ function CallOverlay({ call, localStream, remoteStreams, onEnd, conversation, cu
             onClick={onEnd}
             className="w-12 h-12 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center text-white text-lg"
           >
-            ✕
+            <span className="material-icons">call_end</span>
           </button>
         </div>
       </div>
@@ -432,10 +432,11 @@ function MessageInfoModal({ message, conv, onClose }) {
 
 export default function Chat() {
   const { token, setToken, user, setUser, conversations, setConversations, activeId, setActiveId, messages, setMessages, pushMessage, updateMessage, replaceTempMessage, removeMessage, logout, profileOpen, setProfileOpen } = useStore()
+  console.log('Chat Component Rendered. User:', user);
   const [socket, setSocket] = useState(null)
   const [typingUsers, setTypingUsers] = useState({})
   const [openNew, setOpenNew] = useState(false)
-  const [selectedMessage, setSelectedMessage] = useState(null)
+  const [selectedMessages, setSelectedMessages] = useState(new Set())
   const [toast, setToast] = useState(null)
   const nav = useNavigate()
   const [showMembers, setShowMembers] = useState(false)
@@ -453,6 +454,38 @@ export default function Chat() {
   const [isCameraOn, setIsCameraOn] = useState(true)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
   const [participantStates, setParticipantStates] = useState({})
+
+  const handleSaveEdit = async () => {
+    if (!editingMessageId || !editingMessageContent.trim()) return
+
+    try {
+      const res = await fetch(`${API}/api/messages/${editingMessageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ content: editingMessageContent })
+      })
+      if (res.ok) {
+        useStore.getState().updateMessage(activeId, editingMessageId, { content: editingMessageContent, editedAt: new Date().toISOString() })
+        setEditingMessageId(null)
+        setEditingMessageContent('')
+      } else {
+        alert('Failed to edit message')
+      }
+    } catch (e) {
+      console.error('Error editing message:', e)
+      alert('Failed to edit message')
+    }
+  }
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null)
+    setEditingMessageContent('')
+  }
+
+  // Top search state
+  const [topSearchQuery, setTopSearchQuery] = useState('')
+  const [topSearchResults, setTopSearchResults] = useState([])
+  const [showTopSearch, setShowTopSearch] = useState(false)
 
   const removeRemotePeer = (peerId) => {
     if (!peerId) return
@@ -532,6 +565,33 @@ export default function Chat() {
         console.error('Microphone denied', err)
       })
   }, [])
+
+  // Top search logic
+  useEffect(() => {
+    if (!user || !topSearchQuery.trim()) {
+      setTopSearchResults([])
+      setShowTopSearch(false)
+      return
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const r = await fetch(`${API}/api/users`)
+        const list = await r.json()
+        const lower = topSearchQuery.toLowerCase()
+        const matches = list.filter(u =>
+          String(u._id) !== String(user._id) && (
+            u.username.toLowerCase().includes(lower) ||
+            (u.email && u.email.toLowerCase().includes(lower))
+          )
+        ).slice(0, 5)
+        setTopSearchResults(matches)
+        setShowTopSearch(true)
+      } catch (e) {
+        console.error(e)
+      }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [topSearchQuery, user?._id])
 
   useEffect(() => {
     (async () => {
@@ -632,9 +692,18 @@ export default function Chat() {
         const convId = Object.keys(state.messages).find(cid => (state.messages[cid] || []).some(m => m._id === messageId))
         if (convId) state.updateMessage(convId, messageId, { deliveredTo, seenBy })
       })
+      s.on('message_edited', ({ messageId, content, editedAt }) => {
+        const state = useStore.getState()
+        const convId = Object.keys(state.messages).find(cid => (state.messages[cid] || []).some(m => m._id === messageId))
+        if (convId) state.updateMessage(convId, messageId, { content, editedAt })
+      })
       s.on('message_deleted', ({ messageId, conversationId }) => {
         removeMessage(conversationId, messageId)
-        if (selectedMessage?._id === messageId) setSelectedMessage(null)
+        setSelectedMessages(prev => {
+          const next = new Set(prev)
+          next.delete(messageId)
+          return next
+        })
       })
       s.on('typing', ({ conversationId, userId }) => {
         setTypingUsers(t => ({ ...t, [conversationId]: new Set([...(t[conversationId] || []), userId]) }))
@@ -939,11 +1008,28 @@ export default function Chat() {
 
   const onLogout = () => { logout(); nav('/login') }
 
+  const getDeletedForMeMap = () => {
+    try { return JSON.parse(localStorage.getItem('deletedForMe') || '{}') } catch { return {} }
+  }
+  const setDeletedForMeMap = (map) => {
+    try { localStorage.setItem('deletedForMe', JSON.stringify(map)) } catch {}
+  }
+  const addDeletedForMe = (convId, ids) => {
+    const map = getDeletedForMeMap()
+    const existing = new Set((map[convId] || []).map(String))
+    ids.forEach(id => existing.add(String(id)))
+    map[convId] = [...existing]
+    setDeletedForMeMap(map)
+  }
+  const getDeletedIdsForConv = (convId) => new Set(((getDeletedForMeMap()[convId]) || []).map(String))
+
   const refreshMessages = async () => {
     if (!socket || !activeId || !user || !token) return
     const r = await fetch(`${API}/api/messages/${activeId}`, { headers: { Authorization: `Bearer ${token}` } })
     const msgs = await r.json()
-    setMessages(activeId, msgs)
+    const hidden = getDeletedIdsForConv(activeId)
+    const filtered = (msgs || []).filter(m => !hidden.has(String(m._id)))
+    setMessages(activeId, filtered)
   }
 
   async function ensureLocalStream(kind) {
@@ -1536,9 +1622,61 @@ export default function Chat() {
           <div className="w-9 h-9 rounded-full bg-yellow-400 grid place-items-center font-bold">💬</div>
           <div className="font-semibold text-lg">XevyTalk</div>
         </div>
-        <div className="flex items-center gap-4 text-gray-500">
-          <span>📁</span><span>✉️</span><span>🔔</span><span>⚙️</span>
-          <input className="rounded-xl border-0 bg-white shadow-soft px-3 py-1 text-sm" placeholder="Search" />
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
+            <button className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-full">
+              <span className="material-icons">folder</span>
+            </button>
+            <button className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-full">
+              <span className="material-icons">email</span>
+            </button>
+            <button className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-full">
+              <span className="material-icons">settings</span>
+            </button>
+          </div>
+          <div className="relative flex items-center gap-1 bg-white rounded-xl shadow-soft px-2">
+            <input
+              placeholder="Search users..."
+              value={topSearchQuery}
+              onChange={e => setTopSearchQuery(e.target.value)}
+              onFocus={() => topSearchQuery && setShowTopSearch(true)}
+              onBlur={() => setTimeout(() => setShowTopSearch(false), 200)}
+              className="border-0 bg-transparent px-2 py-1.5 text-sm w-48 focus:ring-0 outline-none"
+            />
+            <div className="h-5 w-px bg-gray-200"></div>
+            <button className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-full">
+              <span className="material-icons text-lg">search</span>
+            </button>
+            {showTopSearch && topSearchResults.length > 0 && (
+              <div className="absolute top-full right-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-gray-100 z-50 overflow-hidden">
+                {topSearchResults.map(u => (
+                  <button
+                    key={u._id}
+                    onClick={() => {
+                      // Start direct chat logic
+                      (async () => {
+                        const r = await fetch(`${API}/api/conversations/direct`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ userId: u._id }) })
+                        const conv = await r.json()
+                        setConversations(cs => (cs.find(c => c._id === conv._id) ? cs : [conv, ...cs]))
+                        setActiveId(conv._id)
+                        setTopSearchQuery('')
+                        setShowTopSearch(false)
+                      })()
+                    }}
+                    className="w-full text-left px-4 py-3 hover:bg-sky-50 flex items-center gap-3 transition-colors border-b border-gray-50 last:border-0"
+                  >
+                    <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 grid place-items-center font-semibold text-xs">
+                      {u.username?.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-sm text-gray-900 truncate">{u.username}</div>
+                      <div className="text-xs text-gray-500 truncate">{u.email}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button onClick={() => setProfileOpen(true)} className="ml-2 w-8 h-8 rounded-full border grid place-items-center bg-indigo-100 text-indigo-700 font-semibold">
             {String(user.username || '?').charAt(0).toUpperCase()}
           </button>
@@ -1551,16 +1689,18 @@ export default function Chat() {
         </div>
         <div className="flex-1 min-w-0 h-full">
           <CenterPanel
-            user={user}
-            socket={socket}
-            typingUsers={typingUsers}
-            setShowMembers={setShowMembers}
-            setInfoMsg={setInfoMsg}
-            refreshMessages={refreshMessages}
-            onStartCall={startCall}
-            selectedMessage={selectedMessage}
-            setSelectedMessage={setSelectedMessage}
-          />
+               user={user}
+               socket={socket}
+               typingUsers={typingUsers}
+               setShowMembers={setShowMembers}
+               setInfoMsg={setInfoMsg}
+               refreshMessages={refreshMessages}
+               onStartCall={startCall}
+               selectedMessages={selectedMessages}
+               setSelectedMessages={setSelectedMessages}
+               getDeletedIdsForConv={getDeletedIdsForConv}
+               addDeletedForMe={addDeletedForMe}
+             />
         </div>
         <div className="w-72 flex-none border-l h-full hidden xl:block">
           <RightPanel user={user} onOpenProfile={() => setProfileOpen(true)} />
@@ -1579,6 +1719,18 @@ export default function Chat() {
         />
       )}
       {toast && <Toast notification={toast} onClose={() => setToast(null)} />}
+
+      {/* Force Change Password Modal */}
+      {user && user.mustChangePassword && (
+        <ChangePasswordModal
+          token={token}
+          onComplete={(updatedUser) => {
+            setUser(updatedUser)
+            // Update localStorage as well
+            localStorage.setItem('user', JSON.stringify(updatedUser))
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -1624,7 +1776,9 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
     })()
   }, [user._id])
 
-  const sorted = [...conversations].sort((a, b) => {
+  // Ensure unique conversations (avoid duplicate keys) and sort by recency
+  const uniqueConversations = [...new Map(conversations.map(c => [c._id, c])).values()]
+  const sorted = uniqueConversations.sort((a, b) => {
     const ta = new Date(a.lastMessageAt || a.updatedAt || a.createdAt || 0).getTime()
     const tb = new Date(b.lastMessageAt || b.updatedAt || b.createdAt || 0).getTime()
     return tb - ta
@@ -1788,56 +1942,163 @@ function LeftPanel({ user, conversations, activeId, onPick, onNew }) {
   )
 }
 
-function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, refreshMessages, onStartCall, selectedMessage, setSelectedMessage }) {
-  const { activeId, messages, pushMessage, token, conversations, setConversations, setActiveId, setMessages } = useStore()
+function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, refreshMessages, onStartCall, selectedMessages, setSelectedMessages, getDeletedIdsForConv, addDeletedForMe }) {
+  const { activeId, messages, pushMessage, token, conversations, setConversations, setActiveId, setMessages, removeMessage } = useStore()
   const [text, setText] = useState('')
+  const [editingMessageId, setEditingMessageId] = useState(null)
+  const [editingMessageContent, setEditingMessageContent] = useState('')
   const [showEmoji, setShowEmoji] = useState(false)
   const [showCallMenu, setShowCallMenu] = useState(false)
+  const [showNotifications, setShowNotifications] = useState(false)
   const [showOptionsMenu, setShowOptionsMenu] = useState(false)
+  const [previewFile, setPreviewFile] = useState(null)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadSession, setUploadSession] = useState(null)
   const listRef = useRef(null)
   const fileInputRef = useRef(null)
-  const convMessages = activeId ? (messages[activeId] || []) : []
+  const selectionHeaderRef = useRef(null)
+  const hiddenIds = activeId ? getDeletedIdsForConv(activeId) : new Set()
+  const convMessages = activeId ? ((messages[activeId] || []).filter(m => !hiddenIds.has(String(m._id)))) : []
 
   const conv = useStore.getState().conversations.find(c => c._id === activeId)
   const membersCount = conv?.members?.length || 1
   const other = conv?.members?.find(m => String(m._id) !== String(user._id))
+
+  const handleSaveEdit = async () => {
+    if (!editingMessageId || !editingMessageContent.trim()) return
+
+    try {
+      const res = await fetch(`${API}/api/messages/${editingMessageId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ content: editingMessageContent })
+      })
+      if (res.ok) {
+        useStore.getState().updateMessage(activeId, editingMessageId, { content: editingMessageContent, editedAt: new Date().toISOString() })
+        setEditingMessageId(null)
+        setEditingMessageContent('')
+      } else {
+        alert('Failed to edit message')
+      }
+    } catch (e) {
+      console.error('Error editing message:', e)
+      alert('Failed to edit message')
+    }
+  }
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null)
+    setEditingMessageContent('')
+  }
 
   // Close menus when switching chats
   useEffect(() => {
     setShowOptionsMenu(false)
     setShowCallMenu(false)
     setShowEmoji(false)
+    setSelectedMessages(new Set())
   }, [activeId])
+
+  useEffect(() => {
+    if (selectedMessages.size === 0) return
+    const onDocClick = (e) => {
+      if (!selectionHeaderRef.current) return
+      const clickedInsideHeader = selectionHeaderRef.current.contains(e.target)
+      const clickedOnBubble = !!(e.target && e.target.closest && e.target.closest('[data-role="message-bubble"]'))
+      if (!clickedInsideHeader && !clickedOnBubble) {
+        setSelectedMessages(new Set())
+        setShowOptionsMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [selectedMessages.size])
 
   useEffect(() => {
     listRef.current?.lastElementChild?.scrollIntoView({ behavior: 'smooth' })
   }, [convMessages.length])
 
   const handleSend = async () => {
-    if (!text.trim() || !socket || !activeId) return
+    // Allow sending if there's text OR a file
+    if ((!text.trim() && !previewFile) || !activeId) return
 
-    const tempId = Math.random().toString(36).slice(2)
-    const msg = {
-      _id: tempId,
-      tempId,
-      conversation: activeId,
-      sender: user,
-      content: text,
-      createdAt: new Date().toISOString(),
-      deliveredTo: [],
-      seenBy: []
+    // If there's a file, it should already be uploaded (via handleFileSelect)
+    // Now send message metadata via REST API
+    if (previewFile && previewFile.fileId) {
+      try {
+        const res = await fetch(`${API}/api/messages/send`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}` 
+          },
+          body: JSON.stringify({
+            conversationId: activeId,
+            messageText: text.trim() || '',
+            fileId: previewFile.fileId,
+            fileURL: previewFile.fileURL,
+            fileName: previewFile.name,
+            fileType: previewFile.type,
+            fileSize: previewFile.size
+          })
+        })
+        
+        if (!res.ok) {
+          const error = await res.json()
+          throw new Error(error.error || 'Failed to send message')
+        }
+        
+        const message = await res.json()
+        
+        // Add to local state (server broadcasts via Socket.IO, but add locally for instant UI)
+        pushMessage(activeId, {
+          ...message,
+          tempId: message.tempId || Math.random().toString(36).slice(2)
+        })
+        
+        setText('')
+        setPreviewFile(null)
+        setUploadSession(null)
+        setUploadProgress(0)
+        
+        if (socket) {
+          socket.emit('stop_typing', { conversationId: activeId })
+        }
+      } catch (e) {
+        console.error('Error sending message:', e)
+        alert(e.message || 'Failed to send message. Please try again.')
+      }
+    } else if (!previewFile) {
+      // Text-only message - can use WebSocket or REST API
+      const tempId = Math.random().toString(36).slice(2)
+      const msg = {
+        _id: tempId,
+        tempId,
+        conversation: activeId,
+        sender: user,
+        content: text.trim(),
+        createdAt: new Date().toISOString(),
+        deliveredTo: [],
+        seenBy: []
+      }
+      pushMessage(activeId, msg)
+
+      // Send via WebSocket (text-only)
+      if (socket) {
+        socket.emit('message_send', {
+          conversationId: activeId,
+          content: text.trim(),
+          tempId
+        })
+        socket.emit('stop_typing', { conversationId: activeId })
+      }
+
+      setText('')
+    } else {
+      // File selected but not uploaded yet
+      alert('Please wait for file upload to complete')
     }
-    pushMessage(activeId, msg)
-
-    // Send plain text to server (server will handle encryption at rest)
-    socket.emit('message_send', {
-      conversationId: activeId,
-      content: text,
-      tempId
-    })
-
-    setText('')
-    socket.emit('stop_typing', { conversationId: activeId })
   }
 
   const isTyping = (typingUsers[activeId] && [...typingUsers[activeId]].filter(id => id !== user._id).length > 0)
@@ -1855,43 +2116,129 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
     setShowEmoji(false)
   }
 
-  const handleFileUpload = async (e) => {
+  const handleFileSelect = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-
-    const formData = new FormData()
-    formData.append('file', file)
-
-    try {
-      const res = await fetch(`${API}/api/upload`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData
-      })
-      if (!res.ok) throw new Error('Upload failed')
-      const attachment = await res.json()
-
-      const tempId = Math.random().toString(36).slice(2)
-      const msg = {
-        _id: tempId,
-        tempId,
-        conversation: activeId,
-        sender: user,
-        content: '',
-        attachments: [attachment],
-        createdAt: new Date().toISOString(),
-        deliveredTo: [],
-        seenBy: []
-      }
-      pushMessage(activeId, msg)
-      socket.emit('message_send', { conversationId: activeId, content: '', tempId, attachments: [attachment] })
-    } catch (e) {
-      console.error(e)
-      alert('Failed to upload file')
+    
+    // Check file size (25MB limit)
+    if (file.size > 25 * 1024 * 1024) {
+      alert('File size should be less than 25MB')
+      return
     }
+    
+    // Create preview URL
+    const fileUrl = URL.createObjectURL(file)
+    setPreviewFile({
+      file,
+      url: fileUrl,
+      name: file.name,
+      type: file.type,
+      size: file.size
+    })
+    
+    // Step 1: Create upload session (WhatsApp-like flow)
+    setIsUploading(true)
+    setUploadProgress(0)
+    
+    try {
+      const sessionRes = await fetch(`${API}/api/media/create-upload-session`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}` 
+        },
+        body: JSON.stringify({
+          fileName: file.name,
+          fileType: file.type,
+          fileSize: file.size
+        })
+      })
+      
+      if (!sessionRes.ok) {
+        const error = await sessionRes.json()
+        throw new Error(error.error || 'Failed to create upload session')
+      }
+      
+      const sessionData = await sessionRes.json()
+      setUploadSession(sessionData)
+      
+      // Step 2: Upload file directly to uploadURL
+      const formData = new FormData()
+      formData.append('file', file)
+      
+      const xhr = new XMLHttpRequest()
+      
+      // Track upload progress
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percentComplete = (e.loaded / e.total) * 100
+          setUploadProgress(percentComplete)
+        }
+      })
+      
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          const uploadResult = JSON.parse(xhr.responseText)
+          setPreviewFile(prev => ({
+            ...prev,
+            fileId: uploadResult.fileId,
+            fileURL: uploadResult.fileURL
+          }))
+          setUploadProgress(100)
+          setIsUploading(false)
+        } else {
+          throw new Error('Upload failed')
+        }
+      }
+      
+      xhr.onerror = () => {
+        alert('Upload failed. Please try again.')
+        setIsUploading(false)
+        setUploadProgress(0)
+        setPreviewFile(null)
+        setUploadSession(null)
+      }
+      
+      xhr.open('POST', sessionData.uploadURL)
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      xhr.send(formData)
+      
+    } catch (e) {
+      console.error('File upload error:', e)
+      alert(e.message || 'Failed to upload file. Please try again.')
+      setIsUploading(false)
+      setUploadProgress(0)
+      setPreviewFile(null)
+      setUploadSession(null)
+    }
+    
     // Reset input
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
+  
+  // Clean up object URL when previewFile changes or component unmounts
+  useEffect(() => {
+    const currentUrl = previewFile?.url
+    return () => {
+      if (currentUrl) {
+        URL.revokeObjectURL(currentUrl)
+      }
+    }
+  }, [previewFile?.url])
+
+  const toggleSelect = (id) => {
+    setSelectedMessages(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const myId = String(user._id)
+  const selectedMsgObjs = convMessages.filter(m => selectedMessages.has(m._id))
+  const allMine = selectedMsgObjs.length > 0 && selectedMsgObjs.every(m => String(m.sender?._id || m.sender) === myId)
+  const allUnseenByOthers = allMine
 
   if (!activeId) {
     return <div className="h-full flex flex-col">
@@ -1907,86 +2254,114 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
 
   return (
     <div className="h-full flex flex-col">
-      <div className="px-5 py-3 border-b flex items-center justify-between relative h-16">
-        {selectedMessage ? (
+      <div ref={selectionHeaderRef} className="px-5 py-3 border-b flex items-center justify-between relative h-16">
+        {selectedMessages.size > 0 ? (
           <>
             <div className="flex items-center gap-3">
-              <button onClick={() => setSelectedMessage(null)} className="p-2 hover:bg-gray-100 rounded-full">✕</button>
-              <div className="font-semibold text-sm">1 selected</div>
+              <button onClick={() => setSelectedMessages(new Set())} className="p-2 hover:bg-gray-100 rounded-full" title="Clear Selection">
+                <span className="material-icons">close</span>
+              </button>
+              <div className="font-semibold text-sm">{selectedMessages.size} selected</div>
             </div>
             <div className="flex items-center gap-3">
-              {String(selectedMessage.sender?._id || selectedMessage.sender) === String(user._id) && (
-                <div className="relative">
-                  <button
-                    onClick={() => setShowOptionsMenu(v => !v)}
-                    className="p-2 hover:bg-gray-100 rounded-lg"
-                    title="Options"
-                  >
-                    ⋯
-                  </button>
-                  {showOptionsMenu && (
-                    <div className="absolute right-0 mt-1 w-52 bg-white rounded-xl shadow-lg border text-sm z-10">
+              <div className="relative">
+                <button
+                  onClick={() => setShowOptionsMenu(v => !v)}
+                  className="p-2 hover:bg-gray-100 rounded-lg"
+                  title="Options"
+                >
+                  <span className="material-icons">more_vert</span>
+                </button>
+                {showOptionsMenu && (
+                  <div className="absolute right-0 mt-1 w-52 bg-white rounded-xl shadow-lg border text-sm z-10">
+                    {selectedMessages.size === 1 && conv?.type === 'group' && (
                       <button
                         onClick={() => {
-                          setInfoMsg(selectedMessage);
-                          setSelectedMessage(null);
+                          const msgId = [...selectedMessages][0];
+                          const msg = convMessages.find(m => m._id === msgId);
+                          if (msg) setInfoMsg(msg);
+                          setSelectedMessages(new Set());
                           setShowOptionsMenu(false);
                         }}
                         className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left rounded-t-xl"
                       >
-                        <span>ℹ️</span>
+                        <span className="material-icons">info</span>
                         <span>Info</span>
                       </button>
+                    )}
+                    {selectedMessages.size === 1 && (() => {
+                      const msg = convMessages.find(m => m._id === [...selectedMessages][0])
+                      const mine = msg && String(msg.sender?._id || msg.sender) === String(user._id)
+                      return mine
+                    })() && (
+                      <button
+            onClick={() => {
+              const msgId = [...selectedMessages][0]
+              const msg = convMessages.find(m => m._id === msgId)
+              setEditingMessageId(msgId)
+              setEditingMessageContent(msg?.content || '')
+              setSelectedMessages(new Set())
+              setShowOptionsMenu(false)
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
+          >
+            <span className="material-icons">edit</span>
+            <span>Edit</span>
+          </button>
+                    )}
+                    <button
+                      onClick={async () => {
+                        if (!confirm(`Delete ${selectedMessages.size} message(s) for yourself?`)) return
+                        try {
+                          // Optimistic update
+                          const convId = activeId;
+                          [...selectedMessages].forEach(msgId => {
+                            removeMessage(convId, msgId)
+                          })
+                          addDeletedForMe(convId, [...selectedMessages])
+
+                          setSelectedMessages(new Set())
+                          setShowOptionsMenu(false)
+                        } catch (e) {
+                          console.error(e)
+                          alert('Failed to delete')
+                        }
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
+                    >
+                      <span className="material-icons">delete</span>
+                      <span>Delete for Me</span>
+                    </button>
+
+                    {allMine && allUnseenByOthers && (
                       <button
                         onClick={async () => {
-                          if (!confirm('Delete this message for yourself?')) return
+                          if (!confirm(`Delete ${selectedMessages.size} message(s) for everyone?`)) return
                           try {
-                            await fetch(`${API}/api/messages/${selectedMessage._id}`, {
-                              method: 'DELETE',
-                              headers: { Authorization: `Bearer ${token}` }
-                            })
-                            const convId = String(selectedMessage.conversation?._id || selectedMessage.conversation)
-                            removeMessage(convId, selectedMessage._id)
-                            setSelectedMessage(null)
+                            const promises = [...selectedMessages].map(msgId =>
+                              fetch(`${API}/api/messages/${msgId}?everyone=true`, {
+                                method: 'DELETE',
+                                headers: { Authorization: `Bearer ${token}` }
+                              })
+                            )
+                            await Promise.all(promises)
+
+                            setSelectedMessages(new Set())
                             setShowOptionsMenu(false)
                           } catch (e) {
                             console.error(e)
                             alert('Failed to delete')
                           }
                         }}
-                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
+                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left rounded-b-xl"
                       >
-                        <span>🗑️</span>
-                        <span>Delete for Me</span>
+                        <span className="material-icons">delete</span>
+                        <span>Delete for Everyone</span>
                       </button>
-                      {!(selectedMessage.seenBy || []).some(userId => String(userId) !== String(user._id)) && (
-                        <button
-                          onClick={async () => {
-                            if (!confirm('Delete this message for everyone?')) return
-                            try {
-                              await fetch(`${API}/api/messages/${selectedMessage._id}`, {
-                                method: 'DELETE',
-                                headers: { Authorization: `Bearer ${token}` }
-                              })
-                              const convId = String(selectedMessage.conversation?._id || selectedMessage.conversation)
-                              removeMessage(convId, selectedMessage._id)
-                              setSelectedMessage(null)
-                              setShowOptionsMenu(false)
-                            } catch (e) {
-                              console.error(e)
-                              alert('Failed to delete')
-                            }
-                          }}
-                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-red-50 text-red-600 text-left rounded-b-xl"
-                        >
-                          <span>🗑️</span>
-                          <span>Delete for Everyone</span>
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </>
         ) : (
@@ -2016,16 +2391,16 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-2 text-gray-400">
-              {conv && (
-                <>
-                  <div className="relative">
+              <div className="flex items-center gap-2 text-gray-400">
+                {conv && (
+                  <>
+                    <div className="relative">
                     <button
                       title="Calls"
                       className="w-9 h-9 rounded-full hover:bg-gray-100 flex items-center justify-center text-base"
                       onClick={() => setShowCallMenu(v => !v)}
                     >
-                      <span>📞</span>
+                      <span className="material-icons">call</span>
                     </button>
                     {showCallMenu && (
                       <div className="absolute right-0 mt-1 w-44 bg-white rounded-xl shadow-lg border text-sm z-10">
@@ -2033,27 +2408,27 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
                           className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
                           onClick={() => { setShowCallMenu(false); onStartCall('video') }}
                         >
-                          <span className="text-base">🎥</span>
+                          <span className="material-icons">videocam</span>
                           <span>Video call</span>
                         </button>
                         <button
                           className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 text-left"
                           onClick={() => { setShowCallMenu(false); onStartCall('audio') }}
                         >
-                          <span className="text-base">📞</span>
+                          <span className="material-icons">call</span>
                           <span>Audio call</span>
                         </button>
                       </div>
                     )}
                   </div>
-                </>
-              )}
-              <button
-                title="Refresh messages"
-                className="p-2 rounded-lg hover:bg-gray-100"
-                onClick={refreshMessages}
-              >
-                🔄
+                  </>
+                )}
+                <button
+                  title="Refresh messages"
+                  className="p-2 rounded-lg hover:bg-gray-100"
+                  onClick={refreshMessages}
+                >
+                <span className="material-icons">refresh</span>
               </button>
               <div className="relative">
                 <button
@@ -2061,7 +2436,7 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
                   className="w-9 h-9 rounded-full hover:bg-gray-100 flex items-center justify-center text-base"
                   onClick={() => setShowOptionsMenu(v => !v)}
                 >
-                  <span>⋯</span>
+                  <span className="material-icons">more_vert</span>
                 </button>
                 {showOptionsMenu && (
                   <div className="absolute right-0 mt-1 w-52 bg-white rounded-xl shadow-lg border text-sm z-10">
@@ -2085,7 +2460,7 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
                           }
                         }}
                       >
-                        <span className="text-base">🗑️</span>
+                        <span className="material-icons">delete</span>
                         <span>Delete Conversation</span>
                       </button>
                     ) : (
@@ -2098,7 +2473,7 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
                             setShowOptionsMenu(false)
                           }}
                         >
-                          <span className="text-base">👥</span>
+                          <span className="material-icons">group</span>
                           <span>Group Members</span>
                         </button>
                         <button
@@ -2119,7 +2494,7 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
                             }
                           }}
                         >
-                          <span className="text-base">🧹</span>
+                          <span className="material-icons">cleaning_services</span>
                           <span>Clear Conversation</span>
                         </button>
                         <button
@@ -2140,7 +2515,7 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
                             }
                           }}
                         >
-                          <span className="text-base">🚪</span>
+                          <span className="material-icons">logout</span>
                           <span>Leave Group</span>
                         </button>
                       </>
@@ -2191,8 +2566,13 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
                   totalMembers={membersCount}
                   conv={conv}
                   onInfo={() => setInfoMsg(m)}
-                  selected={selectedMessage?._id === m._id}
-                  onSelect={() => setSelectedMessage(selectedMessage?._id === m._id ? null : m)}
+                  selected={selectedMessages.has(m._id)}
+                  onSelect={() => toggleSelect(m._id)}
+                  editingMessageId={editingMessageId}
+                  editingMessageContent={editingMessageContent}
+                  setEditingMessageContent={setEditingMessageContent}
+                  handleSaveEdit={handleSaveEdit}
+                  handleCancelEdit={handleCancelEdit}
                 />
               </React.Fragment>
             )
@@ -2200,26 +2580,109 @@ function CenterPanel({ user, socket, typingUsers, setShowMembers, setInfoMsg, re
         {isTyping && <div className="text-xs text-gray-500">Typing...</div>}
       </div>
       <div className="p-4 border-t bg-white">
+        {/* File Preview with Upload Progress */}
+        {previewFile && (
+          <div className="mb-3 p-3 bg-gray-50 rounded-lg">
+            <div className="flex items-center gap-3">
+              {previewFile.type.startsWith('image/') ? (
+                <img src={previewFile.url} alt={previewFile.name} className="w-16 h-16 object-cover rounded" />
+              ) : (
+                <div className="w-16 h-16 bg-gray-200 rounded flex items-center justify-center">
+                  <span className="text-2xl">📎</span>
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-gray-900 truncate">{previewFile.name}</div>
+                <div className="text-xs text-gray-500">{(previewFile.size / 1024).toFixed(1)} KB</div>
+                {isUploading && (
+                  <div className="mt-2">
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className="bg-primary h-2 rounded-full transition-all duration-300" 
+                        style={{ width: `${uploadProgress}%` }}
+                      ></div>
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">Uploading {Math.round(uploadProgress)}%</div>
+                  </div>
+                )}
+                {!isUploading && previewFile.fileId && (
+                  <div className="text-xs text-green-600 mt-1">✓ Uploaded</div>
+                )}
+              </div>
+              <button 
+                onClick={() => {
+                  URL.revokeObjectURL(previewFile.url)
+                  setPreviewFile(null)
+                  setUploadSession(null)
+                  setUploadProgress(0)
+                  setIsUploading(false)
+                }}
+                className="px-3 py-1 text-sm text-gray-600 hover:text-gray-900"
+                disabled={isUploading}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <div className="relative">
-            <button onClick={() => setShowEmoji(!showEmoji)} className="px-3 py-2 rounded-lg bg-gray-100" title="Emoji">😊</button>
+            <button onClick={() => setShowEmoji(!showEmoji)} className="px-3 py-2 rounded-lg bg-gray-100" title="Emoji">
+              <span className="material-icons">emoji_emotions</span>
+            </button>
             {showEmoji && (
               <div className="absolute bottom-12 left-0 z-10">
                 <EmojiPicker onEmojiClick={handleEmojiClick} />
               </div>
             )}
           </div>
-          <button onClick={() => fileInputRef.current?.click()} className="px-3 py-2 rounded-lg bg-gray-100" title="Attach">📎</button>
-          <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
-          <input value={text} onChange={(e) => onInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleSend() }} className="flex-1 rounded-full border-0 bg-sky-50 px-4 py-3" placeholder="Say something..." />
-          <button onClick={handleSend} className="bg-primary text-white px-4 py-3 rounded-full">Send</button>
+          <button onClick={() => fileInputRef.current?.click()} className="px-3 py-2 rounded-lg bg-gray-100" title="Attach">
+            <span className="material-icons">attach_file</span>
+          </button>
+          <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileSelect} />
+          <input 
+            value={text} 
+            onChange={(e) => onInput(e.target.value)} 
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }} 
+            className="flex-1 rounded-full border-0 bg-sky-50 px-4 py-3" 
+            placeholder={previewFile ? "Add a message (optional)..." : "Say something..."} 
+            disabled={isUploading}
+          />
+          <button 
+            onClick={handleSend} 
+            disabled={isUploading || (!text.trim() && (!previewFile || !previewFile.fileId))}
+            className="bg-primary text-white px-4 py-3 rounded-full disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isUploading ? `Uploading ${Math.round(uploadProgress)}%` : 'Send'}
+          </button>
         </div>
+        {showNotifications && (
+          <div className="absolute right-4 top-16 w-80 bg-white shadow-lg border rounded-xl z-20">
+            <div className="px-3 py-2 flex items-center justify-between border-b">
+              <div className="font-semibold text-sm">Notifications</div>
+              <button className="text-xs text-gray-600" onClick={() => setShowNotifications(false)}>Close</button>
+            </div>
+            <div className="max-h-80 overflow-y-auto p-2 space-y-2">
+              {(useStore.getState().notifications || []).length === 0 ? (
+                <div className="text-xs text-gray-500 px-2 py-3">No notifications</div>
+              ) : (
+                useStore.getState().notifications.map(n => (
+                  <button key={n.id} onClick={() => { setShowNotifications(false); setActiveId(n.conversationId) }} className="w-full text-left px-2 py-2 hover:bg-gray-50 rounded-lg">
+                    <div className="text-sm font-medium">{n.title}</div>
+                    <div className="text-xs text-gray-600 truncate">{n.message}</div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-function MessageBubble({ m, me, totalMembers, conv, onInfo, selected, onSelect }) {
+function MessageBubble({ m, me, totalMembers, conv, onInfo, selected, onSelect, editingMessageId, editingMessageContent, setEditingMessageContent, handleSaveEdit, handleCancelEdit }) {
+  console.log('MessageBubble props:', { handleSaveEdit, handleCancelEdit });
   const mine = String(m.sender?._id || m.sender) === String(me)
   const senderName = m.sender?.username || (conv?.members || []).find(x => String(x._id) === String(m.sender))?.username || (mine ? 'You' : 'User')
 
@@ -2227,6 +2690,7 @@ function MessageBubble({ m, me, totalMembers, conv, onInfo, selected, onSelect }
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div
         onClick={onSelect}
+        data-role="message-bubble"
         className={`max-w-[70%] rounded-2xl px-4 py-3 shadow cursor-pointer transition-colors ${selected ? 'ring-2 ring-offset-1 ring-primary' : ''} ${mine ? 'bg-primary text-white rounded-br-sm' : 'bg-white rounded-bl-sm'}`}
       >
         {conv?.type === 'group' && (
@@ -2248,9 +2712,31 @@ function MessageBubble({ m, me, totalMembers, conv, onInfo, selected, onSelect }
             ))}
           </div>
         )}
-        <div className="text-sm whitespace-pre-wrap">{m.content}</div>
+        <div className="text-sm whitespace-pre-wrap">
+          {editingMessageId === m._id ? (
+            <>
+              <input
+                type="text"
+                value={editingMessageContent}
+                onChange={(e) => setEditingMessageContent(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveEdit()
+                  if (e.key === 'Escape') handleCancelEdit()
+                }}
+                className="w-full p-1 rounded bg-gray-100 text-gray-800"
+              />
+              <div className="flex gap-2 mt-2">
+                <button onClick={handleSaveEdit} className="px-3 py-1 bg-primary text-white rounded-full text-xs">Save</button>
+                <button onClick={handleCancelEdit} className="px-3 py-1 bg-gray-300 text-gray-800 rounded-full text-xs">Cancel</button>
+              </div>
+            </>
+          ) : (
+            m.content
+          )}
+        </div>
         <div className={`text-[10px] mt-1 flex items-center gap-2 ${mine ? 'text-white/80' : 'text-gray-500'}`}>
           <span>{dayjs(m.createdAt).format('HH:mm')}</span>
+          {m.editedAt && <span className="opacity-70">(edited)</span>}
           {mine && <StatusIcon m={m} me={me} totalMembers={totalMembers} />}
         </div>
       </div>
@@ -2405,11 +2891,10 @@ function CreateUserModal({ onClose, token }) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               className="w-full rounded-xl border-gray-300 bg-gray-50 px-4 py-2 focus:ring-2 focus:ring-primary focus:border-transparent"
-              placeholder="user@xevyte.com"
+              placeholder="user@example.com"
               required
               disabled={loading || success}
             />
-            <div className="text-xs text-gray-500 mt-1">Must be @xevyte.com domain</div>
           </div>
 
           <div className="flex gap-3 pt-2">
@@ -2435,10 +2920,250 @@ function CreateUserModal({ onClose, token }) {
   )
 }
 
+function ViewUsersModal({ onClose, token }) {
+  const [users, setUsers] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    fetchUsers()
+  }, [])
+
+  const fetchUsers = async () => {
+    try {
+      setLoading(true)
+      const r = await fetch(`${API}/api/admin/users`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!r.ok) throw new Error('Failed to fetch users')
+      const data = await r.json()
+      setUsers(data)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const filteredUsers = users.filter(u =>
+    u.username.toLowerCase().includes(search.toLowerCase()) ||
+    u.email.toLowerCase().includes(search.toLowerCase())
+  )
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl p-6 w-[90%] max-w-2xl h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold text-gray-900">Created Users</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="mb-4">
+          <input
+            type="text"
+            placeholder="Search users..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full rounded-xl border-gray-300 bg-gray-50 px-4 py-2 focus:ring-2 focus:ring-primary focus:border-transparent"
+          />
+        </div>
+
+        {error && (
+          <div className="bg-red-50 text-red-600 p-3 rounded-xl text-sm mb-4">
+            {error}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          ) : filteredUsers.length === 0 ? (
+            <div className="text-center text-gray-500 py-8">No users found</div>
+          ) : (
+            <div className="grid gap-3">
+              {filteredUsers.map(u => (
+                <div key={u._id} className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                  <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-700 grid place-items-center font-bold">
+                    {u.username.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-gray-900 truncate">{u.username}</div>
+                    <div className="text-sm text-gray-500 truncate">{u.email}</div>
+                  </div>
+                  <div className="text-xs text-gray-400">
+                    {dayjs(u.createdAt).format('MMM D, YYYY')}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ChangePasswordModal({ token, onComplete }) {
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    console.log('ChangePasswordModal mounted');
+  }, []);
+
+  // Password validation checks
+  const passwordChecks = useMemo(() => ({
+    length: newPassword.length >= 8,
+    uppercase: /[A-Z]/.test(newPassword),
+    lowercase: /[a-z]/.test(newPassword),
+    number: /[0-9]/.test(newPassword)
+  }), [newPassword])
+
+  const allPasswordChecksPassed = Object.values(passwordChecks).every(Boolean)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+
+    if (!allPasswordChecksPassed) {
+      setError('Please meet all password requirements')
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      setError('Passwords do not match')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const r = await fetch(`${API}/api/auth/change-password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ newPassword })
+      })
+
+      const data = await r.json()
+
+      if (!r.ok) {
+        throw new Error(data.error || 'Failed to update password')
+      }
+
+      onComplete(data.user)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[100]">
+      <div className="bg-white rounded-2xl shadow-xl p-8 w-[90%] max-w-md">
+        <div className="text-center mb-6">
+          <div className="w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <h2 className="text-2xl font-bold text-gray-900">Change Password Required</h2>
+          <p className="text-gray-600 mt-2">For your security, please update your temporary password to continue.</p>
+        </div>
+
+        {error && (
+          <div className="bg-red-50 text-red-600 p-3 rounded-xl text-sm mb-4 text-center">
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="w-full rounded-xl border-gray-300 bg-gray-50 px-4 py-2 focus:ring-2 focus:ring-primary focus:border-transparent"
+              placeholder="Min. 8 characters"
+              required
+            />
+          </div>
+
+          {/* Password validation timeline */}
+          {newPassword && (
+            <div className="bg-sky-50 rounded-xl p-3 space-y-2">
+              <div className="text-xs font-medium text-gray-600 mb-2">Password Requirements:</div>
+              <div className="space-y-1.5">
+                <div className={`flex items-center gap-2 text-xs ${passwordChecks.length ? 'text-green-600' : 'text-gray-500'}`}>
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center ${passwordChecks.length ? 'bg-green-500' : 'bg-gray-300'}`}>
+                    {passwordChecks.length ? '✓' : '○'}
+                  </span>
+                  <span>At least 8 characters</span>
+                </div>
+                <div className={`flex items-center gap-2 text-xs ${passwordChecks.uppercase ? 'text-green-600' : 'text-gray-500'}`}>
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center ${passwordChecks.uppercase ? 'bg-green-500' : 'bg-gray-300'}`}>
+                    {passwordChecks.uppercase ? '✓' : '○'}
+                  </span>
+                  <span>One uppercase letter (A-Z)</span>
+                </div>
+                <div className={`flex items-center gap-2 text-xs ${passwordChecks.lowercase ? 'text-green-600' : 'text-gray-500'}`}>
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center ${passwordChecks.lowercase ? 'bg-green-500' : 'bg-gray-300'}`}>
+                    {passwordChecks.lowercase ? '✓' : '○'}
+                  </span>
+                  <span>One lowercase letter (a-z)</span>
+                </div>
+                <div className={`flex items-center gap-2 text-xs ${passwordChecks.number ? 'text-green-600' : 'text-gray-500'}`}>
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center ${passwordChecks.number ? 'bg-green-500' : 'bg-gray-300'}`}>
+                    {passwordChecks.number ? '✓' : '○'}
+                  </span>
+                  <span>One number (0-9)</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              className="w-full rounded-xl border-gray-300 bg-gray-50 px-4 py-2 focus:ring-2 focus:ring-primary focus:border-transparent"
+              placeholder="Re-enter password"
+              required
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading || !allPasswordChecksPassed}
+            className="w-full bg-primary hover:bg-primary-dark text-white rounded-xl py-3 font-semibold transition-colors disabled:opacity-50 mt-4"
+          >
+            {loading ? 'Updating Password...' : 'Update Password & Login'}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function RightPanel({ user, onOpenProfile }) {
   const { token, setConversations, setActiveId, notifications, clearNotifications } = useStore()
   const [users, setUsers] = useState([])
   const [showCreateUser, setShowCreateUser] = useState(false)
+  const [showViewUsers, setShowViewUsers] = useState(false)
 
   useEffect(() => {
     (async () => {
@@ -2463,15 +3188,22 @@ function RightPanel({ user, onOpenProfile }) {
       <div className="h-full bg-white rounded-2xl shadow-soft p-4 overflow-y-auto">
         <ProfileCard user={user} onOpenProfile={onOpenProfile} />
 
-        {/* Admin: Create User Button */}
+        {/* Admin: Create & View User Buttons */}
         {user.isAdmin && (
-          <div className="mt-4 mb-4">
+          <div className="mt-4 mb-4 space-y-2">
             <button
               onClick={() => setShowCreateUser(true)}
               className="w-full bg-primary hover:bg-primary-dark text-white rounded-xl px-4 py-2.5 font-medium transition-colors flex items-center justify-center gap-2"
             >
-              <span>➕</span>
+              <span className="material-icons">person_add</span>
               <span>Create User</span>
+            </button>
+            <button
+              onClick={() => setShowViewUsers(true)}
+              className="w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 rounded-xl px-4 py-2.5 font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              <span className="material-icons">group</span>
+              <span>View Users</span>
             </button>
           </div>
         )}
@@ -2545,6 +3277,14 @@ function RightPanel({ user, onOpenProfile }) {
       {showCreateUser && (
         <CreateUserModal
           onClose={() => setShowCreateUser(false)}
+          token={token}
+        />
+      )}
+
+      {/* View Users Modal */}
+      {showViewUsers && (
+        <ViewUsersModal
+          onClose={() => setShowViewUsers(false)}
           token={token}
         />
       )}

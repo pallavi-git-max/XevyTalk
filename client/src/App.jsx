@@ -28,6 +28,22 @@ export default function App() {
   useEffect(() => {
     (async () => {
       let u = JSON.parse(localStorage.getItem('user') || 'null')
+      const token = localStorage.getItem('token')
+
+      if (u && token) {
+        try {
+          const r = await fetch(`${API}/api/auth/me`, {
+            headers: { Authorization: `Bearer ${token}` }
+          })
+          if (r.ok) {
+            u = await r.json()
+            localStorage.setItem('user', JSON.stringify(u))
+          }
+        } catch (e) {
+          console.error('Failed to refresh user', e)
+        }
+      }
+
       if (!u) {
         const r = await fetch(`${API}/api/auth/guest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
         u = await r.json()

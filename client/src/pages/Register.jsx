@@ -47,11 +47,13 @@ export default function Register() {
       return
     }
 
-    // Validate email domain
+    // Validate email domain - removed to allow admin registration (server checks for admin@xevyte.com)
+    /*
     if (!email.endsWith('@xevyte.com')) {
       setError('Email must be from @xevyte.com domain')
       return
     }
+    */
 
     setLoading(true)
     try {
@@ -95,7 +97,7 @@ export default function Register() {
             value={email}
             onChange={e => setEmail(e.target.value)}
             className="w-full rounded-xl border-0 bg-sky-50 px-3 py-2"
-            placeholder="Email (must be @xevyte.com)"
+            placeholder="Email"
             required
           />
           <input
